@@ -1,0 +1,46 @@
+{
+  "name": "@algaguard/device-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Platform-first implementation of algaguard-device-service",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/index.js",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "contract:check": "tsx scripts/check-contracts.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "check": "npm run format:check && npm run lint && npm run contract:check && npm test && npm run build"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "express": "^5.1.0",
+    "jose": "^6.0.11",
+    "minio": "^8.0.5",
+    "mqtt": "^5.13.3",
+    "pg": "^8.16.3",
+    "pino": "^9.7.0",
+    "redis": "^5.6.1",
+    "ws": "^8.18.3",
+    "zod": "^4.0.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.0.13",
+    "@types/pg": "^8.15.4",
+    "@types/supertest": "^6.0.3",
+    "@types/ws": "^8.18.1",
+    "prettier": "^3.6.2",
+    "supertest": "^7.1.4",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
