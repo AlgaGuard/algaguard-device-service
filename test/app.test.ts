@@ -101,6 +101,47 @@ test("authorized QR claim and bootstrap flow uses the versioned contracts", asyn
   assert.equal(updatedContext.body.ownershipVersion, "2");
 });
 
+test("setup authorizes the owning organization before an unclaimed device has active context", async () => {
+  const decisions: Array<{
+    subjectId: string;
+    action: string;
+    resourceType: "organization" | "device";
+    resourceId: string;
+    correlationId?: string;
+  }> = [];
+  const instance = buildApp({
+    repository: new MemoryDeviceRepository(),
+    authenticate,
+    authorize: {
+      async authorize(input) {
+        decisions.push(input);
+        return true;
+      },
+      async registerDevice() {},
+    },
+    credentials: new DevelopmentCredentialProvider(true),
+  });
+  const organizationId = "10000000-0000-4000-8000-000000000001";
+  const created = await request(instance)
+    .post("/v1/devices")
+    .set("authorization", "Bearer user")
+    .send({ organizationId });
+
+  const setup = await request(instance)
+    .post(`/v1/devices/${created.body.deviceUuid}/setup`)
+    .set("authorization", "Bearer user")
+    .send({ expiresInSeconds: 600 });
+
+  assert.equal(setup.status, 201);
+  const { correlationId: _correlationId, ...decision } = decisions.at(-1)!;
+  assert.deepEqual(decision, {
+    subjectId: "owner",
+    action: "device.manage",
+    resourceType: "organization",
+    resourceId: organizationId,
+  });
+});
+
 test("internal context rejects user tokens, unknown devices, and unclaimed devices", async () => {
   const instance = app();
   const organizationId = "10000000-0000-4000-8000-000000000001";

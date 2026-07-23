@@ -127,20 +127,20 @@ export function createRouter(dependencies: RouteDependencies) {
 
   router.post("/devices/:id/setup", async (request, response) => {
     const deviceUuid = z.string().uuid().parse(request.params.id);
+    const device = await repository.getDevice(deviceUuid);
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
     const actor = await requireAccess(
       request,
       "device.manage",
-      "device",
-      deviceUuid,
+      "organization",
+      device.organizationId,
     );
     const input = z
       .object({
         expiresInSeconds: z.number().int().min(60).max(3600).default(600),
       })
       .parse(request.body);
-    const device = await repository.getDevice(deviceUuid);
-    if (!device)
-      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
     response
       .status(201)
       .json(
