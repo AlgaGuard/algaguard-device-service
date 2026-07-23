@@ -176,6 +176,12 @@ export interface DeviceRepository {
     sessionToken: string,
     now?: Date,
   ): Promise<DeviceRecord>;
+  activateDevice(
+    deviceId: string,
+    actorSubjectId: string,
+    reason: string,
+    now?: Date,
+  ): Promise<DeviceRecord>;
   updateStatus(
     deviceId: string,
     status: Record<string, unknown>,
@@ -410,6 +416,26 @@ export class MemoryDeviceRepository implements DeviceRepository {
     const device = this.devices.get(deviceId);
     if (!device)
       throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    device.lifecycle = "ACTIVE";
+    device.updatedAt = now.toISOString();
+    return structuredClone(device);
+  }
+
+  async activateDevice(
+    deviceId: string,
+    _actorSubjectId: string,
+    _reason: string,
+    now = new Date(),
+  ) {
+    const device = this.devices.get(deviceId);
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    if (["INACTIVE", "REVOKED", "UNCLAIMED"].includes(device.lifecycle))
+      throw new DomainError(
+        "DEVICE_NOT_ACTIVE",
+        409,
+        "Device cannot be activated by credential issuance",
+      );
     device.lifecycle = "ACTIVE";
     device.updatedAt = now.toISOString();
     return structuredClone(device);
