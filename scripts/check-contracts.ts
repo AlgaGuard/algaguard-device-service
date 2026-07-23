@@ -8,6 +8,10 @@ const required = [
   "schemas/websocket/realtime-envelope-v1.schema.json",
   "asyncapi/algaguard-mqtt-v1.yaml",
   "asyncapi/algaguard-websocket-v1.yaml",
+  "schemas/onboarding/claim-qr-v1.schema.json",
+  "schemas/onboarding/bootstrap-session-v1.schema.json",
+  "schemas/onboarding/ble-provisioning-request-v1.schema.json",
+  "schemas/onboarding/ble-provisioning-result-v1.schema.json",
 ];
 const missing = required.filter(
   (file) => !fs.existsSync(path.join(contractRoot, file)),

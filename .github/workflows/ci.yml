@@ -10,6 +10,23 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: algaguard
+          POSTGRES_PASSWORD: integration-only
+          POSTGRES_DB: device
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U algaguard -d device"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://algaguard:integration-only@localhost:5432/device
+      TEST_DATABASE_URL: postgresql://algaguard:integration-only@localhost:5432/device
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -25,6 +42,8 @@ jobs:
       - run: npm run check
         env:
           CONTRACTS_DIR: algaguard-contracts
+      - run: npm run migrate
+      - run: npm run test:integration
       - run: npm audit --audit-level=high
       - run: docker build -t algaguard-device-service:ci .
   publish:

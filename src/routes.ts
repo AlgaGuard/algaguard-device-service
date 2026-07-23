@@ -1,140 +1,267 @@
-import { randomBytes } from "node:crypto";
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
-import { ClaimStore, DevelopmentCredentialProvider } from "./domain.js";
+import {
+  createAuthenticator,
+  OidcAccessAuthorizer,
+  type AccessAuthorizer,
+  type Authenticator,
+} from "./auth.js";
+import {
+  DevelopmentCredentialProvider,
+  DomainError,
+  type DeviceCredentialProvider,
+  type DeviceRepository,
+} from "./domain.js";
 
-interface DeviceRecord {
-  id: string;
-  organizationId: string;
-  tankId?: string;
-  hardwareModel: string;
-  status: "UNPROVISIONED" | "PROVISIONED";
+export interface RouteDependencies {
+  repository: DeviceRepository;
+  authenticate?: Authenticator;
+  authorize?: AccessAuthorizer;
+  credentials?: DeviceCredentialProvider;
 }
 
-export const router = Router();
-const claims = new ClaimStore();
-const devices = new Map<string, DeviceRecord>();
-const bootstrap = new Map<string, { deviceId: string; expiresAt: number }>();
-let nextDevice = 1;
-
-async function authorize(subjectId: string, organizationId: string) {
-  const response = await fetch(
-    `${process.env.ACCESS_SERVICE_URL ?? "http://access-service:3000"}/v1/authorizations/subscriptions`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        subjectId,
-        resourceType: "organization",
-        resourceId: organizationId,
-      }),
-    },
-  );
-  return (
-    response.ok &&
-    Boolean(((await response.json()) as { allowed?: boolean }).allowed)
-  );
+function correlationId(request: Request) {
+  return request.header("x-correlation-id");
 }
 
-router.post("/devices", (request, response) => {
-  const input = z
-    .object({
-      organizationId: z.string().uuid(),
-      tankId: z.string().uuid().optional(),
-      hardwareModel: z.string().default("ESP32-S3-DEVKITC-1-N16R8"),
-    })
-    .parse(request.body);
-  const id = `AG-${String(nextDevice++).padStart(6, "0")}`;
-  const record: DeviceRecord = {
-    id,
-    organizationId: input.organizationId,
-    hardwareModel: input.hardwareModel,
-    status: "UNPROVISIONED",
-    ...(input.tankId ? { tankId: input.tankId } : {}),
-  };
-  devices.set(id, record);
-  response.status(201).json(record);
-});
+export function createRouter(dependencies: RouteDependencies) {
+  const router = Router();
+  const authenticate = dependencies.authenticate ?? createAuthenticator();
+  const authorize = dependencies.authorize ?? new OidcAccessAuthorizer();
+  const credentials =
+    dependencies.credentials ?? new DevelopmentCredentialProvider();
+  const { repository } = dependencies;
 
-router.post("/devices/:id/setup", (request, response) => {
-  if (!devices.has(request.params.id))
-    return response.status(404).json({ status: 404 });
-  const input = z
-    .object({ bootstrapUrl: z.string().url(), environment: z.string().min(1) })
-    .parse(request.body);
-  return response
-    .status(201)
-    .json(
-      claims.create(request.params.id, input.bootstrapUrl, input.environment),
-    );
-});
-
-router.post("/claims/consume", async (request, response) => {
-  const input = z
-    .object({
-      claimCode: z.string().min(1),
-      subjectId: z.string().min(1),
-      organizationId: z.string().uuid(),
-    })
-    .parse(request.body);
-  const candidate = claims.peek(input.claimCode);
-  const device = candidate ? devices.get(candidate) : undefined;
-  if (!device || device.organizationId !== input.organizationId) {
-    return response
-      .status(410)
-      .json({ title: "Claim expired or consumed", status: 410 });
-  }
-  if (!(await authorize(input.subjectId, input.organizationId))) {
-    return response
-      .status(403)
-      .json({ title: "Device claim is not authorized", status: 403 });
-  }
-  const deviceId = claims.consume(input.claimCode);
-  if (!deviceId)
-    return response
-      .status(410)
-      .json({ title: "Claim expired or consumed", status: 410 });
-  const bootstrapToken = randomBytes(24).toString("base64url");
-  bootstrap.set(bootstrapToken, {
-    deviceId,
-    expiresAt: Date.now() + 5 * 60_000,
-  });
-  return response.json({
-    deviceId,
-    consumed: true,
-    bootstrapToken,
-    expiresInSeconds: 300,
-  });
-});
-
-router.post("/devices/:id/bootstrap", async (request, response) => {
-  const input = z
-    .object({ bootstrapToken: z.string().min(1) })
-    .parse(request.body);
-  const value = bootstrap.get(input.bootstrapToken);
-  bootstrap.delete(input.bootstrapToken);
-  if (
-    !value ||
-    value.deviceId !== request.params.id ||
-    value.expiresAt <= Date.now()
+  async function requireAccess(
+    request: Request,
+    action: string,
+    resourceType: "organization" | "device",
+    resourceId: string,
+    organizationId?: string,
   ) {
-    return response
-      .status(410)
-      .json({ title: "Bootstrap credential expired or consumed", status: 410 });
+    const actor = await authenticate(request.header("authorization"));
+    const requestCorrelationId = correlationId(request);
+    const allowed = await authorize.authorize({
+      subjectId: actor.subjectId,
+      action,
+      resourceType,
+      resourceId,
+      ...(organizationId ? { organizationId } : {}),
+      ...(requestCorrelationId ? { correlationId: requestCorrelationId } : {}),
+    });
+    if (!allowed)
+      throw new DomainError("FORBIDDEN", 403, "Operation is not authorized");
+    return actor;
   }
-  const credentials = await new DevelopmentCredentialProvider().issue(
-    request.params.id,
-  );
-  const device = devices.get(request.params.id);
-  if (device) device.status = "PROVISIONED";
-  return response.json({
-    ...credentials,
-    expiresInSeconds: 900,
-    developmentOnly: true,
-  });
-});
 
-router.get("/devices/:id", (request, response) => {
-  const device = devices.get(request.params.id);
-  response.status(device ? 200 : 404).json(device ?? { status: 404 });
-});
+  router.post("/devices", async (request, response) => {
+    const input = z
+      .object({
+        organizationId: z.string().uuid(),
+        tankId: z.string().uuid().optional(),
+        hardwareModel: z
+          .string()
+          .min(2)
+          .max(64)
+          .default("ESP32-S3-DEVKITC-1-N16R8"),
+      })
+      .parse(request.body);
+    await requireAccess(
+      request,
+      "device.manage",
+      "organization",
+      input.organizationId,
+    );
+    const created = await repository.createDevice({
+      organizationId: input.organizationId,
+      hardwareModel: input.hardwareModel,
+      ...(input.tankId ? { tankId: input.tankId } : {}),
+    });
+    const requestCorrelationId = correlationId(request);
+    await authorize.registerDevice(
+      created.deviceId,
+      created.organizationId,
+      requestCorrelationId,
+    );
+    response.status(201).json(created);
+  });
+
+  router.get("/devices", async (request, response) => {
+    const organizationId = z
+      .string()
+      .uuid()
+      .parse(request.query.organizationId);
+    await requireAccess(request, "device.read", "organization", organizationId);
+    response.json({ items: await repository.listDevices(organizationId) });
+  });
+
+  router.get("/devices/:id", async (request, response) => {
+    await requireAccess(request, "device.read", "device", request.params.id);
+    const value = await repository.getDevice(request.params.id);
+    response
+      .status(value ? 200 : 404)
+      .json(value ?? { code: "DEVICE_NOT_FOUND" });
+  });
+
+  router.put("/devices/:id/tank-association", async (request, response) => {
+    const actor = await requireAccess(
+      request,
+      "device.manage",
+      "device",
+      request.params.id,
+    );
+    const input = z
+      .object({ tankId: z.string().uuid().nullable() })
+      .parse(request.body);
+    response.json(
+      await repository.assignTank(
+        request.params.id,
+        input.tankId ?? undefined,
+        actor.subjectId,
+      ),
+    );
+  });
+
+  router.post("/devices/:id/setup", async (request, response) => {
+    const actor = await requireAccess(
+      request,
+      "device.manage",
+      "device",
+      request.params.id,
+    );
+    const input = z
+      .object({
+        expiresInSeconds: z.number().int().min(60).max(3600).default(600),
+      })
+      .parse(request.body);
+    response
+      .status(201)
+      .json(
+        await repository.createClaim(
+          request.params.id,
+          input.expiresInSeconds * 1000,
+          actor.subjectId,
+        ),
+      );
+  });
+
+  router.post("/claims/consume", async (request, response) => {
+    const input = z
+      .object({
+        organizationId: z.string().uuid(),
+        deviceId: z
+          .string()
+          .regex(/^AG-[0-9]{6}$/)
+          .optional(),
+        claimCode: z.string().min(8).max(96).optional(),
+        qr: z
+          .object({
+            v: z.literal(1),
+            d: z.string().regex(/^AG-[0-9]{6}$/),
+            c: z.string().regex(/^[A-Za-z0-9_-]{32,64}$/),
+            e: z.string().datetime(),
+            f: z.string().regex(/^[A-HJ-NP-Z2-9]{8,12}$/),
+          })
+          .strict()
+          .optional(),
+      })
+      .refine(
+        (value) => Boolean(value.qr || (value.deviceId && value.claimCode)),
+        {
+          message: "qr or deviceId plus claimCode is required",
+        },
+      )
+      .parse(request.body);
+    if (input.qr && Date.parse(input.qr.e) <= Date.now())
+      throw new DomainError("CLAIM_EXPIRED", 410, "Claim QR expired");
+    const deviceId = input.qr?.d ?? input.deviceId!;
+    const secret = input.qr?.c ?? input.claimCode!;
+    const actor = await requireAccess(
+      request,
+      "device.claim",
+      "organization",
+      input.organizationId,
+    );
+    response.json(
+      await repository.consumeClaim({
+        deviceId,
+        secret,
+        organizationId: input.organizationId,
+        subjectId: actor.subjectId,
+      }),
+    );
+  });
+
+  router.post("/devices/:id/bootstrap", async (request, response) => {
+    const input = z
+      .object({ sessionToken: z.string().regex(/^[A-Za-z0-9_-]{32,96}$/) })
+      .parse(request.body);
+    await repository.consumeBootstrap(request.params.id, input.sessionToken);
+    response.json({
+      ...(await credentials.issue(request.params.id)),
+      developmentOnly: true,
+    });
+  });
+
+  router.get("/devices/:id/status", async (request, response) => {
+    await requireAccess(request, "device.read", "device", request.params.id);
+    const value = await repository.latestStatus(request.params.id);
+    response
+      .status(value ? 200 : 404)
+      .json(value ?? { code: "STATUS_NOT_FOUND" });
+  });
+
+  router.get("/devices/:id/health", async (request, response) => {
+    await requireAccess(request, "device.read", "device", request.params.id);
+    const value = await repository.latestHealth(request.params.id);
+    response
+      .status(value ? 200 : 404)
+      .json(value ?? { code: "HEALTH_NOT_FOUND" });
+  });
+
+  router.put("/internal/devices/:id/status", async (request, response) => {
+    const actor = await authenticate(request.header("authorization"));
+    if (!actor.service)
+      throw new DomainError(
+        "SERVICE_TOKEN_REQUIRED",
+        403,
+        "Service token required",
+      );
+    const input = z
+      .object({
+        observedAt: z.string().datetime(),
+        status: z.record(z.string(), z.unknown()),
+      })
+      .parse(request.body);
+    await repository.updateStatus(
+      request.params.id,
+      input.status,
+      new Date(input.observedAt),
+    );
+    response.status(204).end();
+  });
+
+  router.put("/internal/devices/:id/health", async (request, response) => {
+    const actor = await authenticate(request.header("authorization"));
+    if (!actor.service)
+      throw new DomainError(
+        "SERVICE_TOKEN_REQUIRED",
+        403,
+        "Service token required",
+      );
+    const input = z
+      .object({
+        observedAt: z.string().datetime(),
+        health: z.record(z.string(), z.unknown()),
+      })
+      .parse(request.body);
+    await repository.updateHealth(
+      request.params.id,
+      input.health,
+      new Date(input.observedAt),
+    );
+    response.status(204).end();
+  });
+
+  return router;
+}
