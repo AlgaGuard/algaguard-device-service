@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
-import { randomUUID } from "node:crypto";
+import { randomUUID, X509Certificate } from "node:crypto";
 import { OpenSslDevelopmentCaAdapter } from "../src/credential-ca.js";
 import {
   createStaticBrokerAuthenticator,
@@ -388,6 +388,13 @@ test("broker authentication binds fingerprint, SAN UUID, CN deviceId, lifecycle,
     certificatePem: initial.issued.credential.certificatePem!,
   });
   assert.equal(allowed.result, "allow");
+  const allowedDer = await value.service.authenticateBroker({
+    clientId: value.device.deviceId,
+    certificatePem: new X509Certificate(
+      initial.issued.credential.certificatePem!,
+    ).raw.toString("base64"),
+  });
+  assert.equal(allowedDer.result, "allow");
   if (allowed.result !== "allow") assert.fail("credential should authenticate");
   assert.equal(
     allowed.acl.filter((rule) => rule.permission === "allow").length,
@@ -413,7 +420,7 @@ test("broker authentication binds fingerprint, SAN UUID, CN deviceId, lifecycle,
   });
   assert.equal(crossDevice.result, "deny");
   assert.deepEqual(value.service.getMetrics(), {
-    mtlsAccepted: 1,
+    mtlsAccepted: 2,
     credentialMismatch: 1,
     revokedOrExpired: 0,
     inactiveDevice: 0,

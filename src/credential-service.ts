@@ -86,6 +86,29 @@ function safeEqual(left: string, right: string) {
   );
 }
 
+function normalizePeerCertificate(value: string) {
+  const trimmed = value.trim();
+  if (
+    trimmed.startsWith("-----BEGIN CERTIFICATE-----") &&
+    trimmed.endsWith("-----END CERTIFICATE-----")
+  )
+    return `${trimmed}\n`;
+  const compact = trimmed.replace(/\s/g, "");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact))
+    throw new Error("Peer certificate encoding is invalid");
+  const der = Buffer.from(compact, "base64");
+  if (
+    der.length < 128 ||
+    der.length > 12_288 ||
+    der.toString("base64").replace(/=+$/, "") !== compact.replace(/=+$/, "")
+  )
+    throw new Error("Peer certificate DER is invalid");
+  return `-----BEGIN CERTIFICATE-----\n${der
+    .toString("base64")
+    .match(/.{1,64}/g)!
+    .join("\n")}\n-----END CERTIFICATE-----\n`;
+}
+
 function assertCredentialEligibleDevice(device: DeviceRecord | undefined) {
   if (!device)
     throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
@@ -600,7 +623,8 @@ export class DeviceCredentialService {
     now = new Date(),
   ) {
     try {
-      const inspected = await this.ca.inspectCertificate(input.certificatePem);
+      const certificatePem = normalizePeerCertificate(input.certificatePem);
+      const inspected = await this.ca.inspectCertificate(certificatePem);
       const credential = await this.store.getCredentialByFingerprint(
         inspected.fingerprintSha256,
       );
@@ -652,7 +676,7 @@ export class DeviceCredentialService {
         return { result: "deny", is_superuser: false } as const;
       }
       await this.ca.validateIssuedCertificate({
-        certificatePem: input.certificatePem,
+        certificatePem,
         deviceUuid: credential.deviceUuid,
         deviceId: credential.deviceId,
       });
