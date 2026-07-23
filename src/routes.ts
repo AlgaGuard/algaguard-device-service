@@ -271,6 +271,23 @@ export function createRouter(dependencies: RouteDependencies) {
   });
 
   router.get(
+    "/internal/devices/:deviceUuid/context",
+    async (request, response) => {
+      const actor = await authenticate(request.header("authorization"));
+      if (!actor.service)
+        throw new DomainError(
+          "SERVICE_TOKEN_REQUIRED",
+          403,
+          "Service token required",
+        );
+      const deviceUuid = z.string().uuid().parse(request.params.deviceUuid);
+      response.json(
+        resolveDeviceContext(await repository.getDevice(deviceUuid)),
+      );
+    },
+  );
+
+  router.get(
     "/internal/devices/by-device-id/:deviceId/context",
     async (request, response) => {
       const actor = await authenticate(request.header("authorization"));
