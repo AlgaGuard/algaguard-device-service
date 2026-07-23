@@ -1,70 +1,66 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-export interface QrPayload {
-  schema: "algaguard.device.setup";
+
+export const BLE_SERVICE_UUID = "a19a0001-7e4d-4b1a-9c2d-000000000001";
+
+export type DeviceLifecycle =
+  "UNCLAIMED" | "CLAIMED" | "PROVISIONING" | "PROVISIONED" | "REVOKED";
+
+export interface DeviceRecord {
+  deviceId: string;
+  organizationId: string;
+  tankId?: string;
+  hardwareModel: string;
+  firmwareVersion: string;
+  lifecycle: DeviceLifecycle;
+  createdAt: string;
+}
+
+export interface ClaimQrPayload {
+  v: 1;
+  d: string;
+  c: string;
+  e: string;
+  f: string;
+}
+
+export interface BootstrapSession {
+  schema: "urn:algaguard:schema:onboarding:bootstrap-session:v1";
   schemaVersion: "1.0.0";
+  sessionId: string;
   deviceId: string;
-  claimCode: string;
-  bootstrapUrl: string;
-  environment: string;
-  bleServiceId: string;
+  createdAt: string;
   expiresAt: string;
+  serviceUuid: string;
+  sessionToken: string;
 }
-interface Claim {
-  deviceId: string;
-  digest: string;
-  expiresAt: number;
-  consumed: boolean;
-}
-export class ClaimStore {
-  private readonly claims = new Map<string, Claim>();
-  create(
-    deviceId: string,
-    bootstrapUrl: string,
-    environment: string,
-    ttlMs = 10 * 60_000,
-  ): QrPayload {
-    const claimCode = randomBytes(18).toString("base64url");
-    const id = randomUUID();
-    const expiresAt = Date.now() + ttlMs;
-    this.claims.set(id, {
-      deviceId,
-      digest: createHash("sha256").update(claimCode).digest("hex"),
-      expiresAt,
-      consumed: false,
-    });
-    return {
-      schema: "algaguard.device.setup",
-      schemaVersion: "1.0.0",
-      deviceId,
-      claimCode: `${id}.${claimCode}`,
-      bootstrapUrl,
-      environment,
-      bleServiceId: "7f640001-b5a3-f393-e0a9-e50e24dcca9e",
-      expiresAt: new Date(expiresAt).toISOString(),
-    };
-  }
-  consume(encoded: string, now = Date.now()) {
-    const deviceId = this.peek(encoded, now);
-    if (!deviceId) return undefined;
-    const [id] = encoded.split(".");
-    const claim = id ? this.claims.get(id) : undefined;
-    if (!claim) return undefined;
-    claim.consumed = true;
-    return deviceId;
-  }
-  peek(encoded: string, now = Date.now()) {
-    const [id, code] = encoded.split(".");
-    const claim = id ? this.claims.get(id) : undefined;
-    if (!claim || !code || claim.consumed || claim.expiresAt <= now)
-      return undefined;
-    if (createHash("sha256").update(code).digest("hex") !== claim.digest)
-      return undefined;
-    return claim.deviceId;
+
+export class DomainError extends Error {
+  constructor(
+    readonly code: string,
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
   }
 }
+
+export function secretDigest(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+export function fallbackCode(length = 10) {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  return [...randomBytes(length)]
+    .map((value) => alphabet[value % alphabet.length])
+    .join("");
+}
+
 export interface DeviceCredentialProvider {
-  issue(deviceId: string): Promise<{ username: string; password: string }>;
+  issue(
+    deviceId: string,
+  ): Promise<{ username: string; password: string; expiresInSeconds: number }>;
 }
+
 export class DevelopmentCredentialProvider implements DeviceCredentialProvider {
   constructor(
     private readonly enabled = process.env.ALLOW_DEVELOPMENT_CREDENTIALS ===
@@ -72,10 +68,276 @@ export class DevelopmentCredentialProvider implements DeviceCredentialProvider {
   ) {}
   async issue(deviceId: string) {
     if (!this.enabled)
-      throw new Error("Development credential provider is disabled");
+      throw new DomainError(
+        "DEVELOPMENT_PROVIDER_DISABLED",
+        503,
+        "Development credential provider is disabled",
+      );
     return {
       username: deviceId,
-      password: randomBytes(24).toString("base64url"),
+      password: randomBytes(32).toString("base64url"),
+      expiresInSeconds: 900,
     };
   }
+}
+
+export interface DeviceRepository {
+  createDevice(input: {
+    organizationId: string;
+    tankId?: string;
+    hardwareModel: string;
+  }): Promise<DeviceRecord>;
+  listDevices(organizationId: string): Promise<DeviceRecord[]>;
+  getDevice(deviceId: string): Promise<DeviceRecord | undefined>;
+  assignTank(
+    deviceId: string,
+    tankId: string | undefined,
+    actorSubjectId: string,
+  ): Promise<DeviceRecord>;
+  createClaim(
+    deviceId: string,
+    ttlMs: number,
+    actorSubjectId: string,
+  ): Promise<ClaimQrPayload>;
+  consumeClaim(input: {
+    deviceId: string;
+    secret: string;
+    organizationId: string;
+    subjectId: string;
+    now?: Date;
+  }): Promise<{ device: DeviceRecord; bootstrap: BootstrapSession }>;
+  consumeBootstrap(
+    deviceId: string,
+    sessionToken: string,
+    now?: Date,
+  ): Promise<DeviceRecord>;
+  updateStatus(
+    deviceId: string,
+    status: Record<string, unknown>,
+    observedAt: Date,
+  ): Promise<void>;
+  updateHealth(
+    deviceId: string,
+    health: Record<string, unknown>,
+    observedAt: Date,
+  ): Promise<void>;
+  latestStatus(deviceId: string): Promise<Record<string, unknown> | undefined>;
+  latestHealth(deviceId: string): Promise<Record<string, unknown> | undefined>;
+  health(): Promise<void>;
+  close(): Promise<void>;
+}
+
+interface MemoryClaim {
+  id: string;
+  deviceId: string;
+  tokenHash: string;
+  fallbackHash: string;
+  expiresAt: number;
+  consumedAt?: number;
+}
+
+interface MemoryBootstrap {
+  id: string;
+  deviceId: string;
+  tokenHash: string;
+  createdAt: number;
+  expiresAt: number;
+  consumedAt?: number;
+}
+
+export class MemoryDeviceRepository implements DeviceRepository {
+  private nextDevice = 1;
+  private readonly devices = new Map<string, DeviceRecord>();
+  private readonly claims = new Map<string, MemoryClaim>();
+  private readonly bootstrap = new Map<string, MemoryBootstrap>();
+  private readonly failures = new Map<string, number[]>();
+  private readonly statuses = new Map<string, Record<string, unknown>>();
+  private readonly healthValues = new Map<string, Record<string, unknown>>();
+
+  async createDevice(input: {
+    organizationId: string;
+    tankId?: string;
+    hardwareModel: string;
+  }) {
+    const device: DeviceRecord = {
+      deviceId: `AG-${String(this.nextDevice++).padStart(6, "0")}`,
+      organizationId: input.organizationId,
+      ...(input.tankId ? { tankId: input.tankId } : {}),
+      hardwareModel: input.hardwareModel,
+      firmwareVersion: "0.0.0-development",
+      lifecycle: "UNCLAIMED",
+      createdAt: new Date().toISOString(),
+    };
+    this.devices.set(device.deviceId, device);
+    return structuredClone(device);
+  }
+
+  async listDevices(organizationId: string) {
+    return [...this.devices.values()]
+      .filter((value) => value.organizationId === organizationId)
+      .map((value) => structuredClone(value));
+  }
+
+  async getDevice(deviceId: string) {
+    const value = this.devices.get(deviceId);
+    return value ? structuredClone(value) : undefined;
+  }
+
+  async assignTank(
+    deviceId: string,
+    tankId: string | undefined,
+    _actorSubjectId: string,
+  ) {
+    const device = this.devices.get(deviceId);
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    if (tankId) device.tankId = tankId;
+    else delete device.tankId;
+    return structuredClone(device);
+  }
+
+  async createClaim(deviceId: string, ttlMs: number, _actorSubjectId: string) {
+    const device = this.devices.get(deviceId);
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    for (const claim of this.claims.values())
+      if (claim.deviceId === deviceId && !claim.consumedAt)
+        claim.consumedAt = Date.now();
+    const token = randomBytes(24).toString("base64url");
+    const fallback = fallbackCode();
+    const expiresAt = Date.now() + ttlMs;
+    const claim: MemoryClaim = {
+      id: randomUUID(),
+      deviceId,
+      tokenHash: secretDigest(token),
+      fallbackHash: secretDigest(fallback),
+      expiresAt,
+    };
+    this.claims.set(claim.id, claim);
+    return {
+      v: 1,
+      d: deviceId,
+      c: token,
+      e: new Date(expiresAt).toISOString(),
+      f: fallback,
+    } as const;
+  }
+
+  async consumeClaim(input: {
+    deviceId: string;
+    secret: string;
+    organizationId: string;
+    subjectId: string;
+    now?: Date;
+  }): Promise<{ device: DeviceRecord; bootstrap: BootstrapSession }> {
+    const now = input.now?.getTime() ?? Date.now();
+    const failureKey = `${input.subjectId}:${input.deviceId}`;
+    const recent = (this.failures.get(failureKey) ?? []).filter(
+      (value) => value > now - 15 * 60_000,
+    );
+    if (recent.length >= 5)
+      throw new DomainError(
+        "CLAIM_RATE_LIMITED",
+        429,
+        "Claim attempts are rate limited",
+      );
+    const digest = secretDigest(input.secret);
+    const claim = [...this.claims.values()].find(
+      (value) =>
+        value.deviceId === input.deviceId &&
+        (value.tokenHash === digest || value.fallbackHash === digest),
+    );
+    const device = this.devices.get(input.deviceId);
+    if (!claim || !device || claim.consumedAt || claim.expiresAt <= now) {
+      recent.push(now);
+      this.failures.set(failureKey, recent);
+      throw new DomainError(
+        "CLAIM_UNAVAILABLE",
+        410,
+        "Claim expired, used, or invalid",
+      );
+    }
+    if (device.organizationId !== input.organizationId)
+      throw new DomainError(
+        "CROSS_ORGANIZATION_DENIED",
+        403,
+        "Claim is not authorized for this organization",
+      );
+    claim.consumedAt = now;
+    device.lifecycle = "CLAIMED";
+    const sessionToken = randomBytes(32).toString("base64url");
+    const session: MemoryBootstrap = {
+      id: randomUUID(),
+      deviceId: device.deviceId,
+      tokenHash: secretDigest(sessionToken),
+      createdAt: now,
+      expiresAt: now + 5 * 60_000,
+    };
+    this.bootstrap.set(session.id, session);
+    return {
+      device: structuredClone(device),
+      bootstrap: {
+        schema: "urn:algaguard:schema:onboarding:bootstrap-session:v1",
+        schemaVersion: "1.0.0",
+        sessionId: session.id,
+        deviceId: device.deviceId,
+        createdAt: new Date(session.createdAt).toISOString(),
+        expiresAt: new Date(session.expiresAt).toISOString(),
+        serviceUuid: BLE_SERVICE_UUID,
+        sessionToken,
+      },
+    };
+  }
+
+  async consumeBootstrap(
+    deviceId: string,
+    sessionToken: string,
+    now = new Date(),
+  ) {
+    const digest = secretDigest(sessionToken);
+    const session = [...this.bootstrap.values()].find(
+      (value) => value.deviceId === deviceId && value.tokenHash === digest,
+    );
+    if (!session || session.consumedAt || session.expiresAt <= now.getTime())
+      throw new DomainError(
+        "BOOTSTRAP_UNAVAILABLE",
+        410,
+        "Bootstrap session expired, used, or invalid",
+      );
+    session.consumedAt = now.getTime();
+    const device = this.devices.get(deviceId);
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    device.lifecycle = "PROVISIONED";
+    return structuredClone(device);
+  }
+
+  async updateStatus(
+    deviceId: string,
+    status: Record<string, unknown>,
+    observedAt: Date,
+  ) {
+    this.statuses.set(deviceId, {
+      ...structuredClone(status),
+      observedAt: observedAt.toISOString(),
+    });
+  }
+  async updateHealth(
+    deviceId: string,
+    health: Record<string, unknown>,
+    observedAt: Date,
+  ) {
+    this.healthValues.set(deviceId, {
+      ...structuredClone(health),
+      observedAt: observedAt.toISOString(),
+    });
+  }
+  async latestStatus(deviceId: string) {
+    return this.statuses.get(deviceId);
+  }
+  async latestHealth(deviceId: string) {
+    return this.healthValues.get(deviceId);
+  }
+  async health() {}
+  async close() {}
 }

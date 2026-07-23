@@ -14,8 +14,10 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "format:check": "prettier --check .",
     "format": "prettier --write .",
+    "migrate": "tsx scripts/migrate.ts",
     "contract:check": "tsx scripts/check-contracts.ts",
-    "test": "node --import tsx --test test/*.test.ts",
+    "test": "node --import tsx --test test/app.test.ts test/domain.test.ts",
+    "test:integration": "node --import tsx --test test/*.integration.test.ts",
     "check": "npm run format:check && npm run lint && npm run contract:check && npm test && npm run build"
   },
   "dependencies": {
