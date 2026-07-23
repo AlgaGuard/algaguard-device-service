@@ -17,7 +17,10 @@ export function createAuthenticator(
     environment.KEYCLOAK_ISSUER ?? "http://keycloak:8080/realms/algaguard";
   const audience = environment.KEYCLOAK_AUDIENCE ?? "algaguard-api";
   const serviceClients = new Set(
-    (environment.SERVICE_CLIENT_IDS ?? "algaguard-mqtt-ingestion-service")
+    (
+      environment.SERVICE_CLIENT_IDS ??
+      "algaguard-access-service,algaguard-mqtt-ingestion-service,algaguard-telemetry-service"
+    )
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean),
@@ -57,7 +60,7 @@ export interface AccessAuthorizer {
     correlationId?: string;
   }): Promise<boolean>;
   registerDevice(
-    deviceId: string,
+    deviceUuid: string,
     organizationId: string,
     correlationId?: string,
   ): Promise<void>;
@@ -143,12 +146,12 @@ export class OidcAccessAuthorizer implements AccessAuthorizer {
   }
 
   async registerDevice(
-    deviceId: string,
+    deviceUuid: string,
     organizationId: string,
     correlationId?: string,
   ) {
     const response = await this.fetcher(
-      `${this.environment.ACCESS_SERVICE_URL ?? "http://access-service:3000"}/v1/internal/resources/device/${encodeURIComponent(deviceId)}`,
+      `${this.environment.ACCESS_SERVICE_URL ?? "http://access-service:3000"}/v1/internal/resources/device/${encodeURIComponent(deviceUuid)}`,
       {
         method: "PUT",
         headers: {

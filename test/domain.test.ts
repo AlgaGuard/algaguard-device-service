@@ -4,6 +4,7 @@ import {
   DevelopmentCredentialProvider,
   DomainError,
   MemoryDeviceRepository,
+  resolveDeviceContext,
   secretDigest,
 } from "../src/domain.js";
 
@@ -136,4 +137,39 @@ test("development credentials are isolated and disabled unless explicitly enable
   );
   assert.equal(issued.username, "AG-000001");
   assert.ok(issued.password.length >= 32);
+});
+
+test("dual identity is stable and ownership transfer increments the version", async () => {
+  const { repository, device } = await fixture();
+  assert.match(device.deviceUuid, /^[0-9a-f-]{36}$/);
+  assert.equal(device.ownershipVersion, "1");
+  await assert.rejects(
+    Promise.resolve().then(() => resolveDeviceContext(device)),
+    (error: unknown) =>
+      error instanceof DomainError && error.code === "DEVICE_UNCLAIMED",
+  );
+  const transferred = await repository.transferOwnership(
+    device.deviceUuid,
+    "20000000-0000-4000-8000-000000000002",
+    "owner",
+  );
+  assert.equal(transferred.previousOrganizationId, device.organizationId);
+  assert.equal(transferred.device.ownershipVersion, "2");
+  assert.equal(
+    (await repository.getDeviceById(device.deviceId))?.deviceUuid,
+    device.deviceUuid,
+  );
+});
+
+test("inactive and revoked devices cannot produce trusted context", async () => {
+  const { device } = await fixture();
+  for (const [lifecycle, code] of [
+    ["INACTIVE", "DEVICE_INACTIVE"],
+    ["REVOKED", "DEVICE_REVOKED"],
+  ] as const) {
+    assert.throws(
+      () => resolveDeviceContext({ ...device, lifecycle }),
+      (error: unknown) => error instanceof DomainError && error.code === code,
+    );
+  }
 });

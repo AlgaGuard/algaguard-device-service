@@ -3,16 +3,43 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 export const BLE_SERVICE_UUID = "a19a0001-7e4d-4b1a-9c2d-000000000001";
 
 export type DeviceLifecycle =
-  "UNCLAIMED" | "CLAIMED" | "PROVISIONING" | "PROVISIONED" | "REVOKED";
+  | "UNCLAIMED"
+  | "CLAIMED"
+  | "PROVISIONING"
+  | "PROVISIONED"
+  | "ACTIVE"
+  | "INACTIVE"
+  | "REVOKED";
 
 export interface DeviceRecord {
+  deviceUuid: string;
   deviceId: string;
   organizationId: string;
   tankId?: string;
   hardwareModel: string;
   firmwareVersion: string;
   lifecycle: DeviceLifecycle;
+  ownershipVersion: string;
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResolvedDeviceContext {
+  schema: "urn:algaguard:schema:internal:device-context:v1";
+  schemaVersion: "1.0.0";
+  deviceUuid: string;
+  deviceId: string;
+  organizationId: string;
+  status: "ACTIVE";
+  ownershipVersion: string;
+  resolvedAt: string;
+  tankId?: string;
+  contextVersion: "1";
+}
+
+export interface OwnershipTransfer {
+  device: DeviceRecord;
+  previousOrganizationId: string;
 }
 
 export interface ClaimQrPayload {
@@ -42,6 +69,38 @@ export class DomainError extends Error {
   ) {
     super(message);
   }
+}
+
+export function resolveDeviceContext(
+  device: DeviceRecord | undefined,
+  now = new Date(),
+): ResolvedDeviceContext {
+  if (!device)
+    throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+  if (device.lifecycle === "UNCLAIMED")
+    throw new DomainError(
+      "DEVICE_UNCLAIMED",
+      409,
+      "Device has no accepted runtime context",
+    );
+  if (device.lifecycle === "INACTIVE")
+    throw new DomainError("DEVICE_INACTIVE", 409, "Device is inactive");
+  if (device.lifecycle === "REVOKED")
+    throw new DomainError("DEVICE_REVOKED", 410, "Device is revoked");
+  if (device.lifecycle !== "ACTIVE" && device.lifecycle !== "PROVISIONED")
+    throw new DomainError("DEVICE_NOT_ACTIVE", 409, "Device is not active");
+  return {
+    schema: "urn:algaguard:schema:internal:device-context:v1",
+    schemaVersion: "1.0.0",
+    deviceUuid: device.deviceUuid,
+    deviceId: device.deviceId,
+    organizationId: device.organizationId,
+    status: "ACTIVE",
+    ownershipVersion: device.ownershipVersion,
+    resolvedAt: now.toISOString(),
+    ...(device.tankId ? { tankId: device.tankId } : {}),
+    contextVersion: "1",
+  };
 }
 
 export function secretDigest(value: string) {
@@ -88,12 +147,18 @@ export interface DeviceRepository {
     hardwareModel: string;
   }): Promise<DeviceRecord>;
   listDevices(organizationId: string): Promise<DeviceRecord[]>;
-  getDevice(deviceId: string): Promise<DeviceRecord | undefined>;
+  getDevice(deviceUuid: string): Promise<DeviceRecord | undefined>;
+  getDeviceById(deviceId: string): Promise<DeviceRecord | undefined>;
   assignTank(
-    deviceId: string,
+    deviceUuid: string,
     tankId: string | undefined,
     actorSubjectId: string,
   ): Promise<DeviceRecord>;
+  transferOwnership(
+    deviceUuid: string,
+    organizationId: string,
+    actorSubjectId: string,
+  ): Promise<OwnershipTransfer>;
   createClaim(
     deviceId: string,
     ttlMs: number,
@@ -160,13 +225,16 @@ export class MemoryDeviceRepository implements DeviceRepository {
     hardwareModel: string;
   }) {
     const device: DeviceRecord = {
+      deviceUuid: randomUUID(),
       deviceId: `AG-${String(this.nextDevice++).padStart(6, "0")}`,
       organizationId: input.organizationId,
       ...(input.tankId ? { tankId: input.tankId } : {}),
       hardwareModel: input.hardwareModel,
       firmwareVersion: "0.0.0-development",
       lifecycle: "UNCLAIMED",
+      ownershipVersion: "1",
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
     this.devices.set(device.deviceId, device);
     return structuredClone(device);
@@ -178,22 +246,55 @@ export class MemoryDeviceRepository implements DeviceRepository {
       .map((value) => structuredClone(value));
   }
 
-  async getDevice(deviceId: string) {
+  async getDevice(deviceUuid: string) {
+    const value = [...this.devices.values()].find(
+      (candidate) => candidate.deviceUuid === deviceUuid,
+    );
+    return value ? structuredClone(value) : undefined;
+  }
+
+  async getDeviceById(deviceId: string) {
     const value = this.devices.get(deviceId);
     return value ? structuredClone(value) : undefined;
   }
 
   async assignTank(
-    deviceId: string,
+    deviceUuid: string,
     tankId: string | undefined,
     _actorSubjectId: string,
   ) {
-    const device = this.devices.get(deviceId);
+    const device = [...this.devices.values()].find(
+      (candidate) => candidate.deviceUuid === deviceUuid,
+    );
     if (!device)
       throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
     if (tankId) device.tankId = tankId;
     else delete device.tankId;
+    device.updatedAt = new Date().toISOString();
     return structuredClone(device);
+  }
+
+  async transferOwnership(
+    deviceUuid: string,
+    organizationId: string,
+    _actorSubjectId: string,
+  ): Promise<OwnershipTransfer> {
+    const device = [...this.devices.values()].find(
+      (candidate) => candidate.deviceUuid === deviceUuid,
+    );
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    const previousOrganizationId = device.organizationId;
+    if (previousOrganizationId === organizationId)
+      throw new DomainError(
+        "OWNERSHIP_UNCHANGED",
+        409,
+        "Device already belongs to this organization",
+      );
+    device.organizationId = organizationId;
+    device.ownershipVersion = (BigInt(device.ownershipVersion) + 1n).toString();
+    device.updatedAt = new Date().toISOString();
+    return { device: structuredClone(device), previousOrganizationId };
   }
 
   async createClaim(deviceId: string, ttlMs: number, _actorSubjectId: string) {
@@ -265,6 +366,7 @@ export class MemoryDeviceRepository implements DeviceRepository {
       );
     claim.consumedAt = now;
     device.lifecycle = "CLAIMED";
+    device.updatedAt = new Date(now).toISOString();
     const sessionToken = randomBytes(32).toString("base64url");
     const session: MemoryBootstrap = {
       id: randomUUID(),
@@ -308,7 +410,8 @@ export class MemoryDeviceRepository implements DeviceRepository {
     const device = this.devices.get(deviceId);
     if (!device)
       throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
-    device.lifecycle = "PROVISIONED";
+    device.lifecycle = "ACTIVE";
+    device.updatedAt = now.toISOString();
     return structuredClone(device);
   }
 

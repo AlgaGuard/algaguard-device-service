@@ -4,6 +4,10 @@ Durable device registry, claim, bootstrap-session, lifecycle, tank-association, 
 
 PostgreSQL is the runtime source of truth; `MemoryDeviceRepository` is an explicit test adapter only. Human JWTs are verified locally and organization/device actions are authorized through Access Service using a cached OIDC client-credentials token. No arbitrary identity header is trusted.
 
+Each device has an immutable canonical `deviceId` (`AG-######`) for firmware, QR, and MQTT plus a stable `deviceUuid` for REST, authorization, and WebSocket resources. Device Service is the authoritative mapping source. Authenticated backend services resolve an active canonical ID through `GET /v1/internal/devices/by-device-id/{deviceId}/context`; the response adds backend-owned `organizationId` and monotonic `ownershipVersion` and contains no credentials.
+
+Ownership transfer updates the organization and version atomically, records immutable history, and refreshes the Access Service resource hook. Historical consumers retain the organization accepted at ingest rather than rewriting past ownership.
+
 ## Commands
 
 ```sh

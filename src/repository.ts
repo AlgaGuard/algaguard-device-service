@@ -20,13 +20,16 @@ function iso(value: Date | string) {
 
 function device(row: Record<string, unknown>): DeviceRecord {
   return {
+    deviceUuid: String(row.device_uuid),
     deviceId: String(row.device_id),
     organizationId: String(row.organization_id),
     ...(row.tank_id ? { tankId: String(row.tank_id) } : {}),
     hardwareModel: String(row.hardware_model),
     firmwareVersion: String(row.firmware_version),
     lifecycle: row.lifecycle as DeviceLifecycle,
+    ownershipVersion: String(row.ownership_version),
     createdAt: iso(row.created_at as Date),
+    updatedAt: iso(row.updated_at as Date),
   };
 }
 
@@ -40,12 +43,18 @@ export class PostgresDeviceRepository implements DeviceRepository {
   }) {
     const result = await this.pool.query(
       `INSERT INTO devices
-         (device_id, organization_id, tank_id, hardware_model, firmware_version, lifecycle)
+         (device_uuid, device_id, organization_id, tank_id, hardware_model, firmware_version, lifecycle)
        VALUES (
+         $4,
          'AG-' || lpad(nextval('device_number_sequence')::text, 6, '0'),
          $1, $2, $3, '0.0.0-development', 'UNCLAIMED'
        ) RETURNING *`,
-      [input.organizationId, input.tankId ?? null, input.hardwareModel],
+      [
+        input.organizationId,
+        input.tankId ?? null,
+        input.hardwareModel,
+        randomUUID(),
+      ],
     );
     return device(result.rows[0] as Record<string, unknown>);
   }
@@ -58,7 +67,17 @@ export class PostgresDeviceRepository implements DeviceRepository {
     return result.rows.map((row) => device(row as Record<string, unknown>));
   }
 
-  async getDevice(deviceId: string) {
+  async getDevice(deviceUuid: string) {
+    const result = await this.pool.query(
+      "SELECT * FROM devices WHERE device_uuid = $1",
+      [deviceUuid],
+    );
+    return result.rows[0]
+      ? device(result.rows[0] as Record<string, unknown>)
+      : undefined;
+  }
+
+  async getDeviceById(deviceId: string) {
     const result = await this.pool.query(
       "SELECT * FROM devices WHERE device_id = $1",
       [deviceId],
@@ -69,7 +88,7 @@ export class PostgresDeviceRepository implements DeviceRepository {
   }
 
   async assignTank(
-    deviceId: string,
+    deviceUuid: string,
     tankId: string | undefined,
     actorSubjectId: string,
   ) {
@@ -77,8 +96,8 @@ export class PostgresDeviceRepository implements DeviceRepository {
     try {
       await client.query("BEGIN");
       const updated = await client.query(
-        "UPDATE devices SET tank_id = $2, updated_at = now() WHERE device_id = $1 RETURNING *",
-        [deviceId, tankId ?? null],
+        "UPDATE devices SET tank_id = $2, updated_at = now() WHERE device_uuid = $1 RETURNING *",
+        [deviceUuid, tankId ?? null],
       );
       if (!updated.rows[0])
         throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
@@ -86,10 +105,68 @@ export class PostgresDeviceRepository implements DeviceRepository {
         `INSERT INTO device_transitions
            (device_id, from_lifecycle, to_lifecycle, actor_subject_id, reason)
          VALUES ($1, $2, $2, $3, 'TANK_ASSIGNMENT_CHANGED')`,
-        [deviceId, updated.rows[0].lifecycle, actorSubjectId],
+        [updated.rows[0].device_id, updated.rows[0].lifecycle, actorSubjectId],
       );
       await client.query("COMMIT");
       return device(updated.rows[0] as Record<string, unknown>);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async transferOwnership(
+    deviceUuid: string,
+    organizationId: string,
+    actorSubjectId: string,
+  ) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query(
+        "SELECT * FROM devices WHERE device_uuid = $1 FOR UPDATE",
+        [deviceUuid],
+      );
+      const row = current.rows[0] as Record<string, unknown> | undefined;
+      if (!row)
+        throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+      const previousOrganizationId = String(row.organization_id);
+      if (previousOrganizationId === organizationId)
+        throw new DomainError(
+          "OWNERSHIP_UNCHANGED",
+          409,
+          "Device already belongs to this organization",
+        );
+      const updated = await client.query(
+        `UPDATE devices
+            SET organization_id = $2,
+                ownership_version = ownership_version + 1,
+                updated_at = now()
+          WHERE device_uuid = $1
+          RETURNING *`,
+        [deviceUuid, organizationId],
+      );
+      await client.query(
+        `INSERT INTO device_ownership_history
+           (device_uuid, device_id, previous_organization_id, organization_id,
+            ownership_version, actor_subject_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          deviceUuid,
+          updated.rows[0].device_id,
+          previousOrganizationId,
+          organizationId,
+          updated.rows[0].ownership_version,
+          actorSubjectId,
+        ],
+      );
+      await client.query("COMMIT");
+      return {
+        device: device(updated.rows[0] as Record<string, unknown>),
+        previousOrganizationId,
+      };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -293,13 +370,13 @@ export class PostgresDeviceRepository implements DeviceRepository {
         [row.id, now],
       );
       const updated = await client.query(
-        "UPDATE devices SET lifecycle = 'PROVISIONED', updated_at = $2 WHERE device_id = $1 RETURNING *",
+        "UPDATE devices SET lifecycle = 'ACTIVE', updated_at = $2 WHERE device_id = $1 RETURNING *",
         [deviceId, now],
       );
       await client.query(
         `INSERT INTO device_transitions
            (device_id, from_lifecycle, to_lifecycle, actor_subject_id, reason, occurred_at)
-         VALUES ($1, $2, 'PROVISIONED', 'bootstrap-session', 'CREDENTIAL_ISSUED', $3)`,
+         VALUES ($1, $2, 'ACTIVE', 'bootstrap-session', 'CREDENTIAL_ISSUED', $3)`,
         [deviceId, row.lifecycle, now],
       );
       await client.query("COMMIT");

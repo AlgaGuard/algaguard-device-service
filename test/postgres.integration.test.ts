@@ -12,7 +12,7 @@ test(
   async () => {
     const cleanup = new pg.Pool({ connectionString: databaseUrl });
     await cleanup.query(
-      "TRUNCATE device_health_projection, device_status_projection, device_transitions, claim_failures, bootstrap_sessions, device_claims, devices RESTART IDENTITY CASCADE",
+      "TRUNCATE device_ownership_history, device_health_projection, device_status_projection, device_transitions, claim_failures, bootstrap_sessions, device_claims, devices RESTART IDENTITY CASCADE",
     );
     await cleanup.query("ALTER SEQUENCE device_number_sequence RESTART WITH 1");
     await cleanup.end();
@@ -59,7 +59,7 @@ test(
       new pg.Pool({ connectionString: databaseUrl }),
     );
     assert.equal(
-      (await restarted.getDevice(created.deviceId))?.lifecycle,
+      (await restarted.getDevice(created.deviceUuid))?.lifecycle,
       "CLAIMED",
     );
     await assert.rejects(
@@ -82,8 +82,23 @@ test(
       new pg.Pool({ connectionString: databaseUrl }),
     );
     assert.equal(
-      (await afterBootstrapRestart.getDevice(created.deviceId))?.lifecycle,
-      "PROVISIONED",
+      (await afterBootstrapRestart.getDevice(created.deviceUuid))?.lifecycle,
+      "ACTIVE",
+    );
+    const transferred = await afterBootstrapRestart.transferOwnership(
+      created.deviceUuid,
+      "20000000-0000-4000-8000-000000000002",
+      "owner",
+    );
+    assert.equal(transferred.device.deviceUuid, created.deviceUuid);
+    assert.equal(transferred.device.deviceId, created.deviceId);
+    assert.equal(transferred.device.ownershipVersion, "2");
+    await assert.rejects(
+      afterBootstrapRestart.pool.query(
+        "UPDATE devices SET device_id = 'AG-999999' WHERE device_uuid = $1",
+        [created.deviceUuid],
+      ),
+      (error: unknown) => (error as { code?: string }).code === "23514",
     );
     await afterBootstrapRestart.close();
   },

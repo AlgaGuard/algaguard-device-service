@@ -12,6 +12,8 @@ const required = [
   "schemas/onboarding/bootstrap-session-v1.schema.json",
   "schemas/onboarding/ble-provisioning-request-v1.schema.json",
   "schemas/onboarding/ble-provisioning-result-v1.schema.json",
+  "schemas/common/device-identity-v1.schema.json",
+  "schemas/internal/device-context-v1.schema.json",
 ];
 const missing = required.filter(
   (file) => !fs.existsSync(path.join(contractRoot, file)),
