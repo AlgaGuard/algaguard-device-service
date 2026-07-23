@@ -18,6 +18,12 @@ const logger = pino({
     "sessionToken",
     "password",
     "token",
+    "bootstrapToken",
+    "csrPem",
+    "currentCertificatePem",
+    "certificatePem",
+    "privateKey",
+    "privateKeyPem",
   ],
 });
 
@@ -50,7 +56,12 @@ const requestContext: RequestHandler = (request, response, next) => {
 export function buildApp(dependencies: RouteDependencies) {
   const app = express();
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "256kb" }));
+  app.use(
+    express.json({
+      limit:
+        dependencies.httpBodyLimit ?? process.env.HTTP_BODY_LIMIT ?? "256kb",
+    }),
+  );
   app.use(requestContext);
   app.get("/health/live", (_request, response) =>
     response.json({ status: "UP", service: "algaguard-device-service" }),

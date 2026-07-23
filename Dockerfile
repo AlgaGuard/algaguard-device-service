@@ -7,6 +7,7 @@ RUN npm run build && npm prune --omit=dev
 
 FROM node:22-alpine
 ENV NODE_ENV=production
+RUN apk add --no-cache openssl
 USER node
 WORKDIR /app
 COPY --from=build --chown=node:node /app/package*.json ./

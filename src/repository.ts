@@ -389,6 +389,49 @@ export class PostgresDeviceRepository implements DeviceRepository {
     }
   }
 
+  async activateDevice(
+    deviceId: string,
+    actorSubjectId: string,
+    reason: string,
+    now = new Date(),
+  ) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query(
+        "SELECT * FROM devices WHERE device_id = $1 FOR UPDATE",
+        [deviceId],
+      );
+      const row = current.rows[0] as Record<string, unknown> | undefined;
+      if (!row)
+        throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+      if (["INACTIVE", "REVOKED", "UNCLAIMED"].includes(String(row.lifecycle)))
+        throw new DomainError(
+          "DEVICE_NOT_ACTIVE",
+          409,
+          "Device cannot be activated by credential issuance",
+        );
+      const updated = await client.query(
+        "UPDATE devices SET lifecycle = 'ACTIVE', updated_at = $2 WHERE device_id = $1 RETURNING *",
+        [deviceId, now],
+      );
+      if (row.lifecycle !== "ACTIVE")
+        await client.query(
+          `INSERT INTO device_transitions
+             (device_id, from_lifecycle, to_lifecycle, actor_subject_id, reason, occurred_at)
+           VALUES ($1, $2, 'ACTIVE', $3, $4, $5)`,
+          [deviceId, row.lifecycle, actorSubjectId, reason, now],
+        );
+      await client.query("COMMIT");
+      return device(updated.rows[0] as Record<string, unknown>);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async updateStatus(
     deviceId: string,
     status: Record<string, unknown>,
