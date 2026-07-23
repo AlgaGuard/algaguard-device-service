@@ -9,6 +9,7 @@ import {
 import {
   DevelopmentCredentialProvider,
   DomainError,
+  resolveDeviceContext,
   type DeviceCredentialProvider,
   type DeviceRepository,
 } from "./domain.js";
@@ -79,7 +80,7 @@ export function createRouter(dependencies: RouteDependencies) {
     });
     const requestCorrelationId = correlationId(request);
     await authorize.registerDevice(
-      created.deviceId,
+      created.deviceUuid,
       created.organizationId,
       requestCorrelationId,
     );
@@ -96,26 +97,28 @@ export function createRouter(dependencies: RouteDependencies) {
   });
 
   router.get("/devices/:id", async (request, response) => {
-    await requireAccess(request, "device.read", "device", request.params.id);
-    const value = await repository.getDevice(request.params.id);
+    const deviceUuid = z.string().uuid().parse(request.params.id);
+    await requireAccess(request, "device.read", "device", deviceUuid);
+    const value = await repository.getDevice(deviceUuid);
     response
       .status(value ? 200 : 404)
       .json(value ?? { code: "DEVICE_NOT_FOUND" });
   });
 
   router.put("/devices/:id/tank-association", async (request, response) => {
+    const deviceUuid = z.string().uuid().parse(request.params.id);
     const actor = await requireAccess(
       request,
       "device.manage",
       "device",
-      request.params.id,
+      deviceUuid,
     );
     const input = z
       .object({ tankId: z.string().uuid().nullable() })
       .parse(request.body);
     response.json(
       await repository.assignTank(
-        request.params.id,
+        deviceUuid,
         input.tankId ?? undefined,
         actor.subjectId,
       ),
@@ -123,26 +126,66 @@ export function createRouter(dependencies: RouteDependencies) {
   });
 
   router.post("/devices/:id/setup", async (request, response) => {
+    const deviceUuid = z.string().uuid().parse(request.params.id);
     const actor = await requireAccess(
       request,
       "device.manage",
       "device",
-      request.params.id,
+      deviceUuid,
     );
     const input = z
       .object({
         expiresInSeconds: z.number().int().min(60).max(3600).default(600),
       })
       .parse(request.body);
+    const device = await repository.getDevice(deviceUuid);
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
     response
       .status(201)
       .json(
         await repository.createClaim(
-          request.params.id,
+          device.deviceId,
           input.expiresInSeconds * 1000,
           actor.subjectId,
         ),
       );
+  });
+
+  router.post("/devices/:id/ownership-transfer", async (request, response) => {
+    const deviceUuid = z.string().uuid().parse(request.params.id);
+    const current = await repository.getDevice(deviceUuid);
+    if (!current)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    const actor = await requireAccess(
+      request,
+      "device.manage",
+      "device",
+      deviceUuid,
+      current.organizationId,
+    );
+    const input = z
+      .object({ organizationId: z.string().uuid() })
+      .strict()
+      .parse(request.body);
+    await requireAccess(
+      request,
+      "device.manage",
+      "organization",
+      input.organizationId,
+    );
+    const transferred = await repository.transferOwnership(
+      deviceUuid,
+      input.organizationId,
+      actor.subjectId,
+    );
+    const requestCorrelationId = correlationId(request);
+    await authorize.registerDevice(
+      transferred.device.deviceUuid,
+      transferred.device.organizationId,
+      requestCorrelationId,
+    );
+    response.json(transferred);
   });
 
   router.post("/claims/consume", async (request, response) => {
@@ -204,20 +247,48 @@ export function createRouter(dependencies: RouteDependencies) {
   });
 
   router.get("/devices/:id/status", async (request, response) => {
-    await requireAccess(request, "device.read", "device", request.params.id);
-    const value = await repository.latestStatus(request.params.id);
+    const deviceUuid = z.string().uuid().parse(request.params.id);
+    await requireAccess(request, "device.read", "device", deviceUuid);
+    const device = await repository.getDevice(deviceUuid);
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    const value = await repository.latestStatus(device.deviceId);
     response
       .status(value ? 200 : 404)
       .json(value ?? { code: "STATUS_NOT_FOUND" });
   });
 
   router.get("/devices/:id/health", async (request, response) => {
-    await requireAccess(request, "device.read", "device", request.params.id);
-    const value = await repository.latestHealth(request.params.id);
+    const deviceUuid = z.string().uuid().parse(request.params.id);
+    await requireAccess(request, "device.read", "device", deviceUuid);
+    const device = await repository.getDevice(deviceUuid);
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    const value = await repository.latestHealth(device.deviceId);
     response
       .status(value ? 200 : 404)
       .json(value ?? { code: "HEALTH_NOT_FOUND" });
   });
+
+  router.get(
+    "/internal/devices/by-device-id/:deviceId/context",
+    async (request, response) => {
+      const actor = await authenticate(request.header("authorization"));
+      if (!actor.service)
+        throw new DomainError(
+          "SERVICE_TOKEN_REQUIRED",
+          403,
+          "Service token required",
+        );
+      const deviceId = z
+        .string()
+        .regex(/^AG-[0-9]{6}$/)
+        .parse(request.params.deviceId);
+      response.json(
+        resolveDeviceContext(await repository.getDeviceById(deviceId)),
+      );
+    },
+  );
 
   router.put("/internal/devices/:id/status", async (request, response) => {
     const actor = await authenticate(request.header("authorization"));
