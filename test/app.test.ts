@@ -77,6 +77,12 @@ test("authorized QR claim and bootstrap flow uses the versioned contracts", asyn
   assert.equal(context.body.organizationId, organizationId);
   assert.equal(context.body.status, "ACTIVE");
   assert.equal(context.body.ownershipVersion, "1");
+  const uuidContext = await request(instance)
+    .get(`/v1/internal/devices/${created.body.deviceUuid}/context`)
+    .set("authorization", "Bearer service");
+  assert.equal(uuidContext.status, 200);
+  assert.equal(uuidContext.body.deviceId, created.body.deviceId);
+  assert.equal(uuidContext.body.deviceUuid, created.body.deviceUuid);
 
   const transferred = await request(instance)
     .post(`/v1/devices/${created.body.deviceUuid}/ownership-transfer`)
@@ -115,6 +121,10 @@ test("internal context rejects user tokens, unknown devices, and unclaimed devic
     .get("/v1/internal/devices/by-device-id/AG-999999/context")
     .set("authorization", "Bearer service");
   assert.equal(unknown.status, 404);
+  const unknownUuid = await request(instance)
+    .get("/v1/internal/devices/30000000-0000-4000-8000-000000000003/context")
+    .set("authorization", "Bearer service");
+  assert.equal(unknownUuid.status, 404);
 });
 
 test("unknown routes use problem details", async () => {
