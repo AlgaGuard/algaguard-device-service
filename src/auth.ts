@@ -25,9 +25,9 @@ export function createAuthenticator(
       .map((value) => value.trim())
       .filter(Boolean),
   );
-  const jwks = createRemoteJWKSet(
-    new URL(`${issuer}/protocol/openid-connect/certs`),
-  );
+  const jwksUrl =
+    environment.KEYCLOAK_JWKS_URL ?? `${issuer}/protocol/openid-connect/certs`;
+  const jwks = createRemoteJWKSet(new URL(jwksUrl));
   return async (authorization) => {
     const match = /^Bearer ([^ ]+)$/.exec(authorization ?? "");
     if (!match?.[1]) throw new AuthenticationError("Bearer token required");
@@ -79,23 +79,23 @@ export class OidcAccessAuthorizer implements AccessAuthorizer {
     const issuer =
       this.environment.KEYCLOAK_ISSUER ??
       "http://keycloak:8080/realms/algaguard";
+    const tokenUrl =
+      this.environment.KEYCLOAK_TOKEN_URL ??
+      `${issuer}/protocol/openid-connect/token`;
     const clientId =
       this.environment.SERVICE_CLIENT_ID ?? "algaguard-device-service";
     const clientSecret = this.environment.SERVICE_CLIENT_SECRET;
     if (!clientSecret)
       throw new AuthenticationError("SERVICE_CLIENT_SECRET is required");
-    const response = await this.fetcher(
-      `${issuer}/protocol/openid-connect/token`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "client_credentials",
-          client_id: clientId,
-          client_secret: clientSecret,
-        }),
-      },
-    );
+    const response = await this.fetcher(tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+    });
     if (!response.ok)
       throw new AuthenticationError("Service authentication failed");
     const value = (await response.json()) as {
