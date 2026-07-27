@@ -389,6 +389,64 @@ export class PostgresDeviceRepository implements DeviceRepository {
     }
   }
 
+  async exchangeBootstrapSession(
+    sessionToken: string,
+    expectedDeviceId?: string,
+    now = new Date(),
+  ) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const found = await client.query(
+        `SELECT b.*, d.* FROM bootstrap_sessions b JOIN devices d ON d.device_id=b.device_id
+          WHERE b.token_hash=$1 FOR UPDATE OF b, d`,
+        [secretDigest(sessionToken)],
+      );
+      const row = found.rows[0] as Record<string, unknown> | undefined;
+      if (!row)
+        throw new DomainError(
+          "INVALID_SESSION_TOKEN",
+          401,
+          "Session token is invalid",
+        );
+      if (expectedDeviceId && String(row.device_id) !== expectedDeviceId)
+        throw new DomainError(
+          "DEVICE_MISMATCH",
+          400,
+          "Session does not match device",
+        );
+      if (row.consumed_at)
+        throw new DomainError(
+          "USED_SESSION_TOKEN",
+          401,
+          "Session token was already used",
+        );
+      if (new Date(row.expires_at as Date).getTime() <= now.getTime())
+        throw new DomainError(
+          "EXPIRED_SESSION_TOKEN",
+          401,
+          "Session token expired",
+        );
+      if (["INACTIVE", "REVOKED", "UNCLAIMED"].includes(String(row.lifecycle)))
+        throw new DomainError(
+          "DEVICE_INACTIVE",
+          403,
+          "Device is not eligible for bootstrap",
+        );
+      await client.query(
+        "UPDATE bootstrap_sessions SET consumed_at=$2 WHERE id=$1",
+        [row.id, now],
+      );
+      await client.query("COMMIT");
+      return { sessionId: String(row.id), device: device(row) };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async activateDevice(
     deviceId: string,
     actorSubjectId: string,

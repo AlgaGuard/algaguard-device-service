@@ -61,6 +61,11 @@ export interface BootstrapSession {
   sessionToken: string;
 }
 
+export interface BootstrapExchangeContext {
+  sessionId: string;
+  device: DeviceRecord;
+}
+
 export class DomainError extends Error {
   constructor(
     readonly code: string,
@@ -176,6 +181,11 @@ export interface DeviceRepository {
     sessionToken: string,
     now?: Date,
   ): Promise<DeviceRecord>;
+  exchangeBootstrapSession(
+    sessionToken: string,
+    expectedDeviceId?: string,
+    now?: Date,
+  ): Promise<BootstrapExchangeContext>;
   activateDevice(
     deviceId: string,
     actorSubjectId: string,
@@ -419,6 +429,52 @@ export class MemoryDeviceRepository implements DeviceRepository {
     device.lifecycle = "ACTIVE";
     device.updatedAt = now.toISOString();
     return structuredClone(device);
+  }
+
+  async exchangeBootstrapSession(
+    sessionToken: string,
+    expectedDeviceId?: string,
+    now = new Date(),
+  ): Promise<BootstrapExchangeContext> {
+    const session = [...this.bootstrap.values()].find(
+      (value) => value.tokenHash === secretDigest(sessionToken),
+    );
+    if (!session)
+      throw new DomainError(
+        "INVALID_SESSION_TOKEN",
+        401,
+        "Session token is invalid",
+      );
+    if (expectedDeviceId && session.deviceId !== expectedDeviceId)
+      throw new DomainError(
+        "DEVICE_MISMATCH",
+        400,
+        "Session does not match device",
+      );
+    if (session.consumedAt)
+      throw new DomainError(
+        "USED_SESSION_TOKEN",
+        401,
+        "Session token was already used",
+      );
+    if (session.expiresAt <= now.getTime())
+      throw new DomainError(
+        "EXPIRED_SESSION_TOKEN",
+        401,
+        "Session token expired",
+      );
+    const device = this.devices.get(session.deviceId);
+    if (
+      !device ||
+      ["INACTIVE", "REVOKED", "UNCLAIMED"].includes(device.lifecycle)
+    )
+      throw new DomainError(
+        "DEVICE_INACTIVE",
+        403,
+        "Device is not eligible for bootstrap",
+      );
+    session.consumedAt = now.getTime();
+    return { sessionId: session.id, device: structuredClone(device) };
   }
 
   async activateDevice(
