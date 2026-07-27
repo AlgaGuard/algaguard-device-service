@@ -163,8 +163,60 @@ async function fixture(context: TestContext) {
     broker,
     options,
   );
-  return { directory, ca, repository, store, broker, service, device };
+  return {
+    directory,
+    ca,
+    repository,
+    store,
+    broker,
+    service,
+    device,
+    sessionToken: claimed.bootstrap.sessionToken,
+  };
 }
+
+test("claim sessions exchange once into an ownership-bound CSR bootstrap", async (context) => {
+  const value = await fixture(context);
+  const exchanged = await value.service.exchangeBootstrapSession({
+    sessionToken: value.sessionToken,
+    deviceId: value.device.deviceId,
+  });
+  assert.equal(exchanged.deviceUuid, value.device.deviceUuid);
+  assert.doesNotMatch(
+    JSON.stringify(exchanged),
+    /private[_-]?key|organizationId/i,
+  );
+  await assert.rejects(
+    value.service.exchangeBootstrapSession({
+      sessionToken: value.sessionToken,
+    }),
+    (error: unknown) =>
+      error instanceof DomainError && error.code === "USED_SESSION_TOKEN",
+  );
+  const generated = await generateCsr(
+    value.directory,
+    "exchanged",
+    value.device,
+  );
+  await value.repository.transferOwnership(
+    value.device.deviceUuid,
+    "10000000-0000-4000-8000-000000000002",
+    "owner",
+  );
+  await assert.rejects(
+    value.service.issueInitial({
+      token: exchanged.bootstrapToken,
+      deviceUuid: exchanged.deviceUuid,
+      deviceId: exchanged.deviceId,
+      idempotencyKey: randomUUID(),
+      keyAlgorithm: "EC_P256",
+      csrPem: generated.csrPem,
+    }),
+    (error: unknown) =>
+      error instanceof DomainError &&
+      error.code === "OWNERSHIP_VERSION_CHANGED",
+  );
+});
 
 async function issueInitial(
   value: Awaited<ReturnType<typeof fixture>>,

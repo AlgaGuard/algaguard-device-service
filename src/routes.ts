@@ -244,6 +244,11 @@ export function createRouter(dependencies: RouteDependencies) {
       .object({ sessionToken: z.string().regex(/^[A-Za-z0-9_-]{32,96}$/) })
       .parse(request.body);
     await repository.consumeBootstrap(request.params.id, input.sessionToken);
+    response.setHeader("Deprecation", "true");
+    response.setHeader(
+      "Warning",
+      '299 - "Development-only bootstrap; migrate to exchange plus CSR issue"',
+    );
     response.json({
       ...(await credentials.issue(request.params.id)),
       developmentOnly: true,
@@ -357,6 +362,34 @@ export function createRouter(dependencies: RouteDependencies) {
 
   if (dependencies.credentialLifecycle) {
     const lifecycle = dependencies.credentialLifecycle;
+
+    router.post(
+      "/device-credential-bootstrap/exchange",
+      async (request, response) => {
+        const input = z
+          .object({
+            schema: z
+              .literal(
+                "urn:algaguard:schema:onboarding:bootstrap-token-exchange-request:v1",
+              )
+              .optional(),
+            schemaVersion: z.literal("1.0.0").optional(),
+            sessionToken: z.string().regex(/^[A-Za-z0-9_-]{32,96}$/),
+            deviceId: z
+              .string()
+              .regex(/^AG-[0-9]{6}$/)
+              .optional(),
+          })
+          .strict()
+          .parse(request.body);
+        response.status(201).json(
+          await lifecycle.exchangeBootstrapSession({
+            sessionToken: input.sessionToken,
+            ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+          }),
+        );
+      },
+    );
 
     router.post(
       "/devices/:id/credential-bootstrap",

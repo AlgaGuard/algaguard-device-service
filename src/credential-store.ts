@@ -54,6 +54,10 @@ export interface CredentialBootstrapRecord {
   authorizationId: string;
   deviceUuid: string;
   deviceId: string;
+  organizationId?: string;
+  ownershipVersion?: string;
+  claimSessionId?: string;
+  purpose?: "CSR_ISSUE";
   tokenHash: string;
   attemptsRemaining: number;
   createdBy: string;
@@ -115,6 +119,9 @@ export interface CredentialStore {
   createBootstrap(input: {
     deviceUuid: string;
     deviceId: string;
+    organizationId?: string;
+    ownershipVersion?: string;
+    claimSessionId?: string;
     createdBy: string;
     ttlMs: number;
     attempts: number;
@@ -123,6 +130,8 @@ export interface CredentialStore {
   reserveInitialIssuance(input: {
     deviceUuid: string;
     deviceId: string;
+    organizationId?: string;
+    ownershipVersion?: string;
     tokenHash: string;
     idempotencyKey: string;
     csrFingerprintSha256: string;
@@ -209,6 +218,9 @@ export class MemoryCredentialStore implements CredentialStore {
   async createBootstrap(input: {
     deviceUuid: string;
     deviceId: string;
+    organizationId?: string;
+    ownershipVersion?: string;
+    claimSessionId?: string;
     createdBy: string;
     ttlMs: number;
     attempts: number;
@@ -238,6 +250,12 @@ export class MemoryCredentialStore implements CredentialStore {
       authorizationId: randomUUID(),
       deviceUuid: input.deviceUuid,
       deviceId: input.deviceId,
+      ...(input.organizationId ? { organizationId: input.organizationId } : {}),
+      ...(input.ownershipVersion
+        ? { ownershipVersion: input.ownershipVersion }
+        : {}),
+      ...(input.claimSessionId ? { claimSessionId: input.claimSessionId } : {}),
+      ...(input.claimSessionId ? { purpose: "CSR_ISSUE" as const } : {}),
       tokenHash: secretDigest(token),
       attemptsRemaining: input.attempts,
       createdBy: input.createdBy,
@@ -262,6 +280,8 @@ export class MemoryCredentialStore implements CredentialStore {
   async reserveInitialIssuance(input: {
     deviceUuid: string;
     deviceId: string;
+    organizationId?: string;
+    ownershipVersion?: string;
     tokenHash: string;
     idempotencyKey: string;
     csrFingerprintSha256: string;
@@ -288,6 +308,17 @@ export class MemoryCredentialStore implements CredentialStore {
         "BOOTSTRAP_UNAVAILABLE",
         410,
         "Bootstrap authorization expired, used, or invalid",
+      );
+    if (
+      (authorization.organizationId &&
+        authorization.organizationId !== input.organizationId) ||
+      (authorization.ownershipVersion &&
+        authorization.ownershipVersion !== input.ownershipVersion)
+    )
+      throw new DomainError(
+        "OWNERSHIP_VERSION_CHANGED",
+        403,
+        "Bootstrap authorization is no longer valid",
       );
     if (authorization.tokenHash !== input.tokenHash) {
       authorization.attemptsRemaining -= 1;
@@ -803,6 +834,9 @@ export class PostgresCredentialStore implements CredentialStore {
   async createBootstrap(input: {
     deviceUuid: string;
     deviceId: string;
+    organizationId?: string;
+    ownershipVersion?: string;
+    claimSessionId?: string;
     createdBy: string;
     ttlMs: number;
     attempts: number;
@@ -832,12 +866,15 @@ export class PostgresCredentialStore implements CredentialStore {
       const authorizationId = randomUUID();
       const result = await client.query(
         `INSERT INTO credential_bootstrap_sessions
-          (authorization_id, device_uuid, device_id, token_hash, attempts_remaining, created_by, created_at, expires_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+          (authorization_id, device_uuid, device_id, organization_id, ownership_version, claim_session_id, token_hash, attempts_remaining, created_by, created_at, expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
         [
           authorizationId,
           input.deviceUuid,
           input.deviceId,
+          input.organizationId ?? null,
+          input.ownershipVersion ?? null,
+          input.claimSessionId ?? null,
           secretDigest(token),
           input.attempts,
           input.createdBy,
@@ -865,6 +902,16 @@ export class PostgresCredentialStore implements CredentialStore {
           authorizationId,
           deviceUuid: String(row.device_uuid),
           deviceId: String(row.device_id),
+          ...(row.organization_id
+            ? { organizationId: String(row.organization_id) }
+            : {}),
+          ...(row.ownership_version
+            ? { ownershipVersion: String(row.ownership_version) }
+            : {}),
+          ...(row.claim_session_id
+            ? { claimSessionId: String(row.claim_session_id) }
+            : {}),
+          ...(row.claim_session_id ? { purpose: "CSR_ISSUE" as const } : {}),
           tokenHash: String(row.token_hash),
           attemptsRemaining: Number(row.attempts_remaining),
           createdBy: String(row.created_by),
@@ -883,6 +930,8 @@ export class PostgresCredentialStore implements CredentialStore {
   async reserveInitialIssuance(input: {
     deviceUuid: string;
     deviceId: string;
+    organizationId?: string;
+    ownershipVersion?: string;
     tokenHash: string;
     idempotencyKey: string;
     csrFingerprintSha256: string;
@@ -932,6 +981,17 @@ export class PostgresCredentialStore implements CredentialStore {
           "Bootstrap authorization expired, used, or invalid",
         );
       }
+      if (
+        (authorization.organization_id &&
+          String(authorization.organization_id) !== input.organizationId) ||
+        (authorization.ownership_version &&
+          String(authorization.ownership_version) !== input.ownershipVersion)
+      )
+        throw new DomainError(
+          "OWNERSHIP_VERSION_CHANGED",
+          403,
+          "Bootstrap authorization is no longer valid",
+        );
       const active = await client.query(
         `SELECT 1 FROM device_credentials
           WHERE device_uuid=$1 AND purpose='INITIAL' AND status IN ('PENDING','ACTIVE','ROTATING')

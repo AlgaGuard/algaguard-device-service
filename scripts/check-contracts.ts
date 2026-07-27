@@ -10,6 +10,8 @@ const required = [
   "asyncapi/algaguard-websocket-v1.yaml",
   "schemas/onboarding/claim-qr-v1.schema.json",
   "schemas/onboarding/bootstrap-session-v1.schema.json",
+  "schemas/onboarding/bootstrap-token-exchange-request-v1.schema.json",
+  "schemas/onboarding/bootstrap-token-exchange-response-v1.schema.json",
   "schemas/onboarding/ble-provisioning-request-v1.schema.json",
   "schemas/onboarding/ble-provisioning-result-v1.schema.json",
   "schemas/common/device-identity-v1.schema.json",

@@ -215,6 +215,8 @@ export class DeviceCredentialService {
     const created = await this.store.createBootstrap({
       deviceUuid: device.deviceUuid,
       deviceId: device.deviceId,
+      organizationId: device.organizationId,
+      ownershipVersion: device.ownershipVersion,
       createdBy: actorId,
       ttlMs: this.options.bootstrapTtlMs,
       attempts: this.options.bootstrapAttempts,
@@ -231,6 +233,42 @@ export class DeviceCredentialService {
       expiresAt: created.record.expiresAt,
       attemptsRemaining: created.record.attemptsRemaining,
       consumedAt: null,
+    };
+  }
+
+  async exchangeBootstrapSession(input: {
+    sessionToken: string;
+    deviceId?: string;
+    now?: Date;
+  }) {
+    const now = input.now ?? new Date();
+    const exchanged = await this.devices.exchangeBootstrapSession(
+      input.sessionToken,
+      input.deviceId,
+      now,
+    );
+    const device = assertCredentialEligibleDevice(exchanged.device);
+    const created = await this.store.createBootstrap({
+      deviceUuid: device.deviceUuid,
+      deviceId: device.deviceId,
+      organizationId: device.organizationId,
+      ownershipVersion: device.ownershipVersion,
+      claimSessionId: exchanged.sessionId,
+      createdBy: `claim-session:${exchanged.sessionId}`,
+      ttlMs: this.options.bootstrapTtlMs,
+      attempts: this.options.bootstrapAttempts,
+      now,
+    });
+    return {
+      schema:
+        "urn:algaguard:schema:onboarding:bootstrap-token-exchange-response:v1" as const,
+      schemaVersion: "1.0.0" as const,
+      bootstrapSessionId: created.record.authorizationId,
+      deviceUuid: device.deviceUuid,
+      deviceId: device.deviceId,
+      bootstrapToken: created.token,
+      expiresAt: created.record.expiresAt,
+      contractVersion: "1.0.0" as const,
     };
   }
 
@@ -298,6 +336,8 @@ export class DeviceCredentialService {
     const reserved = await this.store.reserveInitialIssuance({
       deviceUuid: input.deviceUuid,
       deviceId: input.deviceId,
+      organizationId: device.organizationId,
+      ownershipVersion: device.ownershipVersion,
       tokenHash: secretDigest(input.token),
       idempotencyKey: input.idempotencyKey,
       csrFingerprintSha256: csrFingerprint(input.csrPem),
