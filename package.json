@@ -16,7 +16,7 @@
     "format": "prettier --write .",
     "migrate": "tsx scripts/migrate.ts",
     "contract:check": "tsx scripts/check-contracts.ts",
-    "test": "node --import tsx --test test/app.test.ts test/auth-endpoints.test.ts test/domain.test.ts test/credentials.test.ts",
+    "test": "node --import tsx --test test/app.test.ts test/auth-endpoints.test.ts test/domain.test.ts test/credentials.test.ts test/physical-session-handoff.test.ts",
     "test:integration": "node --import tsx --test --test-concurrency=1 test/*.integration.test.ts",
     "check": "npm run format:check && npm run lint && npm run contract:check && npm test && npm run build"
   },

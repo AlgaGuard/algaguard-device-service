@@ -66,6 +66,12 @@ export interface BootstrapExchangeContext {
   device: DeviceRecord;
 }
 
+export interface BootstrapSessionValidationContext {
+  sessionId: string;
+  device: DeviceRecord;
+  expiresAt: string;
+}
+
 export class DomainError extends Error {
   constructor(
     readonly code: string,
@@ -186,6 +192,11 @@ export interface DeviceRepository {
     expectedDeviceId?: string,
     now?: Date,
   ): Promise<BootstrapExchangeContext>;
+  validateBootstrapSession(
+    sessionToken: string,
+    expectedDeviceId: string,
+    now?: Date,
+  ): Promise<BootstrapSessionValidationContext>;
   activateDevice(
     deviceId: string,
     actorSubjectId: string,
@@ -475,6 +486,43 @@ export class MemoryDeviceRepository implements DeviceRepository {
       );
     session.consumedAt = now.getTime();
     return { sessionId: session.id, device: structuredClone(device) };
+  }
+
+  async validateBootstrapSession(
+    sessionToken: string,
+    expectedDeviceId: string,
+    now = new Date(),
+  ): Promise<BootstrapSessionValidationContext> {
+    const session = [...this.bootstrap.values()].find(
+      (value) => value.tokenHash === secretDigest(sessionToken),
+    );
+    if (!session || session.deviceId !== expectedDeviceId)
+      throw new DomainError(
+        "INVALID_SESSION_TOKEN",
+        401,
+        "Session token is unavailable",
+      );
+    if (session.consumedAt || session.expiresAt <= now.getTime())
+      throw new DomainError(
+        "EXPIRED_SESSION_TOKEN",
+        401,
+        "Session token is unavailable",
+      );
+    const device = this.devices.get(session.deviceId);
+    if (
+      !device ||
+      ["INACTIVE", "REVOKED", "UNCLAIMED"].includes(device.lifecycle)
+    )
+      throw new DomainError(
+        "DEVICE_INACTIVE",
+        403,
+        "Device is not eligible for bootstrap",
+      );
+    return {
+      sessionId: session.id,
+      device: structuredClone(device),
+      expiresAt: new Date(session.expiresAt).toISOString(),
+    };
   }
 
   async activateDevice(

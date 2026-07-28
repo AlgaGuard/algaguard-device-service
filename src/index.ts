@@ -1,4 +1,4 @@
-import { createPostgresPool } from "./adapters.js";
+import { createPostgresPool, createRedis } from "./adapters.js";
 import { buildApp } from "./app.js";
 import { createAuthenticator, OidcAccessAuthorizer } from "./auth.js";
 import { loadConfig } from "./config.js";
@@ -12,11 +12,33 @@ import {
 import { PostgresCredentialStore } from "./credential-store.js";
 import { DevelopmentCredentialProvider } from "./domain.js";
 import { PostgresDeviceRepository } from "./repository.js";
+import {
+  PhysicalSessionCipher,
+  PhysicalSessionHandoffService,
+  RedisPhysicalSessionHandoffStore,
+  type RedisHandoffClient,
+} from "./physical-session-handoff.js";
 
 const config = loadConfig();
 const pool = createPostgresPool(config);
 const repository = new PostgresDeviceRepository(pool);
 const credentialStore = new PostgresCredentialStore(pool);
+const redis =
+  config.ALGAGUARD_ENABLE_PHYSICAL_SESSION_HANDOFF === "1"
+    ? createRedis(config)
+    : undefined;
+if (redis) await redis.connect();
+const physicalSessionHandoff = redis
+  ? new PhysicalSessionHandoffService(
+      repository,
+      new RedisPhysicalSessionHandoffStore(
+        redis as unknown as RedisHandoffClient,
+      ),
+      PhysicalSessionCipher.fromBase64Url(
+        config.PHYSICAL_SESSION_HANDOFF_WRAPPING_KEY!,
+      ),
+    )
+  : undefined;
 const credentialLifecycle =
   config.DEVICE_CA_PROVIDER === "local-development"
     ? new DeviceCredentialService(
@@ -63,6 +85,7 @@ const server = buildApp({
         ),
       }
     : {}),
+  ...(physicalSessionHandoff ? { physicalSessionHandoff } : {}),
   httpBodyLimit: config.HTTP_BODY_LIMIT,
 }).listen(config.PORT, () => {
   process.stdout.write(
@@ -82,6 +105,7 @@ async function shutdown(signal: string) {
   server.close(async (error) => {
     try {
       await repository.close();
+      await redis?.close();
       clearTimeout(deadline);
       process.exit(error ? 1 : 0);
     } catch {

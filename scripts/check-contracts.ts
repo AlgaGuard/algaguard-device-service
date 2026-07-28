@@ -14,6 +14,11 @@ const required = [
   "schemas/onboarding/bootstrap-token-exchange-response-v1.schema.json",
   "schemas/onboarding/ble-provisioning-request-v1.schema.json",
   "schemas/onboarding/ble-provisioning-result-v1.schema.json",
+  "schemas/onboarding/physical-session-handoff-start-request-v1.schema.json",
+  "schemas/onboarding/physical-session-handoff-start-response-v1.schema.json",
+  "schemas/onboarding/physical-session-handoff-approve-request-v1.schema.json",
+  "schemas/onboarding/physical-session-handoff-redeem-request-v1.schema.json",
+  "schemas/onboarding/physical-session-handoff-redeem-response-v1.schema.json",
   "schemas/common/device-identity-v1.schema.json",
   "schemas/internal/device-context-v1.schema.json",
 ];

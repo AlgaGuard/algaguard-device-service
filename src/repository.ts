@@ -447,6 +447,40 @@ export class PostgresDeviceRepository implements DeviceRepository {
     }
   }
 
+  async validateBootstrapSession(
+    sessionToken: string,
+    expectedDeviceId: string,
+    now = new Date(),
+  ) {
+    const result = await this.pool.query(
+      `SELECT b.*, d.* FROM bootstrap_sessions b JOIN devices d ON d.device_id=b.device_id
+        WHERE b.token_hash=$1 AND b.device_id=$2`,
+      [secretDigest(sessionToken), expectedDeviceId],
+    );
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (
+      !row ||
+      row.consumed_at ||
+      new Date(row.expires_at as Date).getTime() <= now.getTime()
+    )
+      throw new DomainError(
+        "INVALID_SESSION_TOKEN",
+        401,
+        "Session token is unavailable",
+      );
+    if (["INACTIVE", "REVOKED", "UNCLAIMED"].includes(String(row.lifecycle)))
+      throw new DomainError(
+        "DEVICE_INACTIVE",
+        403,
+        "Device is not eligible for bootstrap",
+      );
+    return {
+      sessionId: String(row.id),
+      device: device(row),
+      expiresAt: new Date(row.expires_at as Date).toISOString(),
+    };
+  }
+
   async activateDevice(
     deviceId: string,
     actorSubjectId: string,

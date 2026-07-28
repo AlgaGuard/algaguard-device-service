@@ -14,6 +14,7 @@ import {
   type DeviceRepository,
 } from "./domain.js";
 import { DeviceCredentialService } from "./credential-service.js";
+import { PhysicalSessionHandoffService } from "./physical-session-handoff.js";
 
 export interface RouteDependencies {
   repository: DeviceRepository;
@@ -22,6 +23,7 @@ export interface RouteDependencies {
   credentials?: DeviceCredentialProvider;
   credentialLifecycle?: DeviceCredentialService;
   authenticateBroker?: (authorization: string | undefined) => void;
+  physicalSessionHandoff?: PhysicalSessionHandoffService;
   httpBodyLimit?: string;
 }
 
@@ -238,6 +240,73 @@ export function createRouter(dependencies: RouteDependencies) {
       }),
     );
   });
+
+  if (dependencies.physicalSessionHandoff) {
+    const handoff = dependencies.physicalSessionHandoff;
+    router.post(
+      "/development/physical-session-handoffs/start",
+      async (request, response) => {
+        const input = z
+          .object({
+            protocolVersion: z.literal(1),
+            deviceId: z.string().regex(/^AG-[0-9]{6}$/),
+          })
+          .strict()
+          .parse(request.body);
+        response.status(201).json(await handoff.start(input.deviceId));
+      },
+    );
+
+    router.post(
+      "/development/physical-session-handoffs/approve",
+      async (request, response) => {
+        const input = z
+          .object({
+            protocolVersion: z.literal(1),
+            userCode: z.string().min(6).max(16),
+            sessionId: z.string().uuid(),
+            deviceId: z.string().regex(/^AG-[0-9]{6}$/),
+            sessionToken: z.string().regex(/^[A-Za-z0-9_-]{32,96}$/),
+          })
+          .strict()
+          .parse(request.body);
+        const device = await repository.getDeviceById(input.deviceId);
+        if (!device)
+          throw new DomainError(
+            "PHYSICAL_SESSION_HANDOFF_UNAVAILABLE",
+            410,
+            "Handoff unavailable",
+          );
+        await requireAccess(
+          request,
+          "device.claim",
+          "device",
+          device.deviceUuid,
+          device.organizationId,
+        );
+        await handoff.approve({
+          ...input,
+          authorizedOrganizationId: device.organizationId,
+          authorizedOwnershipVersion: device.ownershipVersion,
+        });
+        response.status(204).end();
+      },
+    );
+
+    router.post(
+      "/development/physical-session-handoffs/redeem",
+      async (request, response) => {
+        const input = z
+          .object({
+            protocolVersion: z.literal(1),
+            deviceCode: z.string().regex(/^[A-Za-z0-9_-]{43,128}$/),
+          })
+          .strict()
+          .parse(request.body);
+        response.json(await handoff.redeem(input.deviceCode));
+      },
+    );
+  }
 
   router.post("/devices/:id/bootstrap", async (request, response) => {
     const input = z

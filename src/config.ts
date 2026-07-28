@@ -8,6 +8,8 @@ const environmentSchema = z
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.string().url(),
+    ALGAGUARD_ENABLE_PHYSICAL_SESSION_HANDOFF: z.enum(["0", "1"]).default("0"),
+    PHYSICAL_SESSION_HANDOFF_WRAPPING_KEY: z.string().min(1).optional(),
     HTTP_BODY_LIMIT: z
       .string()
       .regex(/^[1-9][0-9]*(kb|mb)$/i)
@@ -76,6 +78,21 @@ const environmentSchema = z
       .default("info"),
   })
   .superRefine((value, context) => {
+    if (value.ALGAGUARD_ENABLE_PHYSICAL_SESSION_HANDOFF === "1") {
+      if (value.NODE_ENV !== "development" && value.NODE_ENV !== "test")
+        context.addIssue({
+          code: "custom",
+          path: ["ALGAGUARD_ENABLE_PHYSICAL_SESSION_HANDOFF"],
+          message: "physical session handoff is development-only",
+        });
+      const key = value.PHYSICAL_SESSION_HANDOFF_WRAPPING_KEY;
+      if (!key || Buffer.from(key, "base64url").length !== 32)
+        context.addIssue({
+          code: "custom",
+          path: ["PHYSICAL_SESSION_HANDOFF_WRAPPING_KEY"],
+          message: "a 32-byte base64url wrapping key is required",
+        });
+    }
     if (value.DEVICE_CA_PROVIDER === "local-development") {
       if (value.NODE_ENV === "production")
         context.addIssue({

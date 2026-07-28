@@ -20,6 +20,23 @@ npm run dev
 
 Claim QR values conform to the additive onboarding contracts. High-entropy claim, fallback, and bootstrap values are stored only as SHA-256 digests, expire, are one-use, and are redacted from logs. Claim consumption and bootstrap creation are one PostgreSQL transaction; concurrent attempts yield one success. Persistent failure windows rate-limit guessing.
 
+## Development-only physical session handoff
+
+`DEVELOPMENT_ONLY_PHYSICAL_SESSION_HANDOFF` is disabled by default. It is enabled
+only with `ALGAGUARD_ENABLE_PHYSICAL_SESSION_HANDOFF=1` plus a 32-byte base64url
+`PHYSICAL_SESSION_HANDOFF_WRAPPING_KEY`; startup rejects it outside development
+or test. When enabled, the service exposes start, authenticated approval, and
+redeem routes under `/v1/development/physical-session-handoffs`.
+
+The local utility receives a 256-bit device code and short user code. Mobile
+approval validates the active bootstrap-session hash, canonical device binding,
+organization authorization, and ownership version. The session bundle is
+AES-256-GCM encrypted with handoff/device/version/expiry associated data and
+stored only in Redis until its bounded TTL. Device-code redemption is atomic and
+one-time; replay and expiry fail closed. Codes, session tokens, ciphertext, and
+approval/redeem bodies are not logged or stored in PostgreSQL, files, or
+plaintext Redis. This foundation does not perform physical provisioning.
+
 ## Device certificates
 
 `DeviceCredentialService` accepts CSR public material only. It binds the canonical `deviceId` to the certificate CN and the immutable `deviceUuid` to exactly one SAN URI, stores the SHA-256 fingerprint plus public certificate metadata, and retains issuance, rotation, revocation, and audit history. No device private key or CA private key is accepted by an API, stored in PostgreSQL, or returned in a response.
