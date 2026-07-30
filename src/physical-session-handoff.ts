@@ -13,7 +13,6 @@ import {
 } from "./domain.js";
 
 export const physicalSessionHandoffProtocolVersion = 1;
-const handoffLifetimeMs = 5 * 60_000;
 const pollIntervalSeconds = 5;
 
 export interface PhysicalSessionBundle {
@@ -289,13 +288,14 @@ export class PhysicalSessionHandoffService {
     private readonly store: PhysicalSessionHandoffStore,
     private readonly cipher: PhysicalSessionCipher,
     private readonly now: () => Date = () => new Date(),
+    private readonly handoffLifetimeMs: number = 5 * 60_000,
   ) {}
 
   async start(deviceId: string) {
     const now = this.now();
     const deviceCode = randomBytes(32).toString("base64url");
     const userCode = fallbackCode(8);
-    const expiresAt = new Date(now.getTime() + handoffLifetimeMs);
+    const expiresAt = new Date(now.getTime() + this.handoffLifetimeMs);
     const record: PhysicalSessionHandoffRecord = {
       handoffId: randomUUID(),
       deviceId,

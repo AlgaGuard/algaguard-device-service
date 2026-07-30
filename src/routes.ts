@@ -15,6 +15,7 @@ import {
 } from "./domain.js";
 import { DeviceCredentialService } from "./credential-service.js";
 import { PhysicalSessionHandoffService } from "./physical-session-handoff.js";
+import { developmentOnboardingWindowMs } from "./development-onboarding-policy.js";
 
 export interface RouteDependencies {
   repository: DeviceRepository;
@@ -25,6 +26,7 @@ export interface RouteDependencies {
   authenticateBroker?: (authorization: string | undefined) => void;
   physicalSessionHandoff?: PhysicalSessionHandoffService;
   ownedDeviceBootstrapReissueEnabled?: boolean;
+  developmentOnboardingWindowMs?: number;
   httpBodyLimit?: string;
 }
 
@@ -180,22 +182,39 @@ export function createRouter(dependencies: RouteDependencies) {
         device.organizationId,
       );
       const input = z
-        .object({
-          schema: z.literal(
-            "urn:algaguard:schema:onboarding:owned-device-bootstrap-reissue-request:v1",
-          ),
-          schemaVersion: z.literal("1.0.0"),
-          ownershipVersion: z.string().regex(/^[1-9][0-9]{0,18}$/),
-          expiresInSeconds: z.number().int().min(60).max(600),
-        })
-        .strict()
+        .union([
+          z
+            .object({
+              schema: z.literal(
+                "urn:algaguard:schema:onboarding:owned-device-bootstrap-reissue-request:v1",
+              ),
+              schemaVersion: z.literal("1.0.0"),
+              ownershipVersion: z.string().regex(/^[1-9][0-9]{0,18}$/),
+              expiresInSeconds: z.number().int().min(60).max(600),
+            })
+            .strict(),
+          z
+            .object({
+              schema: z.literal(
+                "urn:algaguard:schema:onboarding:owned-device-bootstrap-reissue-request:v2",
+              ),
+              schemaVersion: z.literal("2.0.0"),
+              ownershipVersion: z.string().regex(/^[1-9][0-9]{0,18}$/),
+            })
+            .strict(),
+        ])
         .parse(request.body);
+      const ttlMs =
+        "expiresInSeconds" in input
+          ? input.expiresInSeconds * 1000
+          : (dependencies.developmentOnboardingWindowMs ??
+            developmentOnboardingWindowMs());
       const session = await repository.reissueBootstrapSession({
         deviceUuid,
         organizationId: device.organizationId,
         ownershipVersion: input.ownershipVersion,
         actorSubjectId: actor.subjectId,
-        ttlMs: input.expiresInSeconds * 1000,
+        ttlMs,
       });
       response.setHeader("Cache-Control", "no-store");
       response.status(201).json(session);

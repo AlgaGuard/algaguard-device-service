@@ -18,8 +18,12 @@ import {
   RedisPhysicalSessionHandoffStore,
   type RedisHandoffClient,
 } from "./physical-session-handoff.js";
+import { developmentOnboardingWindowMs } from "./development-onboarding-policy.js";
 
 const config = loadConfig();
+const onboardingWindowMs = developmentOnboardingWindowMs(
+  config.ALGAGUARD_DEVELOPMENT_ONBOARDING_WINDOW_SECONDS,
+);
 const pool = createPostgresPool(config);
 const repository = new PostgresDeviceRepository(pool);
 const credentialStore = new PostgresCredentialStore(pool);
@@ -37,6 +41,8 @@ const physicalSessionHandoff = redis
       PhysicalSessionCipher.fromBase64Url(
         config.PHYSICAL_SESSION_HANDOFF_WRAPPING_KEY!,
       ),
+      () => new Date(),
+      onboardingWindowMs,
     )
   : undefined;
 const credentialLifecycle =
@@ -88,6 +94,7 @@ const server = buildApp({
   ...(physicalSessionHandoff ? { physicalSessionHandoff } : {}),
   ownedDeviceBootstrapReissueEnabled:
     config.ALGAGUARD_ENABLE_OWNED_DEVICE_BOOTSTRAP_REISSUE === "1",
+  developmentOnboardingWindowMs: onboardingWindowMs,
   httpBodyLimit: config.HTTP_BODY_LIMIT,
 }).listen(config.PORT, () => {
   process.stdout.write(

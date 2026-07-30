@@ -13,6 +13,10 @@ const environmentSchema = z
       .enum(["0", "1"])
       .default("0"),
     ALGAGUARD_ENABLE_DEMO_TELEMETRY_SIMULATOR: z.enum(["0", "1"]).default("0"),
+    ALGAGUARD_DEVELOPMENT_ONBOARDING_WINDOW_SECONDS: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.coerce.number().int().min(600).max(1800).optional(),
+    ),
     TELEMETRY_SERVICE_URL: z.string().url().optional(),
     KEYCLOAK_TOKEN_URL: z.string().url().optional(),
     SERVICE_CLIENT_ID: z.string().min(1).optional(),
@@ -86,6 +90,15 @@ const environmentSchema = z
       .default("info"),
   })
   .superRefine((value, context) => {
+    if (
+      value.NODE_ENV === "production" &&
+      value.ALGAGUARD_DEVELOPMENT_ONBOARDING_WINDOW_SECONDS !== undefined
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["ALGAGUARD_DEVELOPMENT_ONBOARDING_WINDOW_SECONDS"],
+        message: "development onboarding timing is forbidden in production",
+      });
     if (value.ALGAGUARD_ENABLE_DEMO_TELEMETRY_SIMULATOR === "1") {
       if (value.NODE_ENV !== "development" && value.NODE_ENV !== "test")
         context.addIssue({
