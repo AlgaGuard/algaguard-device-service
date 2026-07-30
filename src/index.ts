@@ -19,6 +19,10 @@ import {
   type RedisHandoffClient,
 } from "./physical-session-handoff.js";
 import { developmentOnboardingWindowMs } from "./development-onboarding-policy.js";
+import {
+  QrOnboardingGrantSigner,
+  QrOnboardingService,
+} from "./qr-onboarding.js";
 
 const config = loadConfig();
 const onboardingWindowMs = developmentOnboardingWindowMs(
@@ -26,6 +30,16 @@ const onboardingWindowMs = developmentOnboardingWindowMs(
 );
 const pool = createPostgresPool(config);
 const repository = new PostgresDeviceRepository(pool);
+const qrOnboarding =
+  config.ALGAGUARD_ENABLE_QR_ONBOARDING === "1"
+    ? new QrOnboardingService(
+        repository,
+        new QrOnboardingGrantSigner(
+          config.QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8!,
+        ),
+        onboardingWindowMs,
+      )
+    : undefined;
 const credentialStore = new PostgresCredentialStore(pool);
 const redis =
   config.ALGAGUARD_ENABLE_PHYSICAL_SESSION_HANDOFF === "1"
@@ -92,6 +106,7 @@ const server = buildApp({
       }
     : {}),
   ...(physicalSessionHandoff ? { physicalSessionHandoff } : {}),
+  ...(qrOnboarding ? { qrOnboarding } : {}),
   ownedDeviceBootstrapReissueEnabled:
     config.ALGAGUARD_ENABLE_OWNED_DEVICE_BOOTSTRAP_REISSUE === "1",
   developmentOnboardingWindowMs: onboardingWindowMs,

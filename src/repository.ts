@@ -446,6 +446,138 @@ export class PostgresDeviceRepository implements DeviceRepository {
     }
   }
 
+  async createQrOnboardingSession(input: {
+    deviceId: string;
+    organizationId: string;
+    ownershipVersion: string;
+    actorSubjectId: string;
+    nonceHash: string;
+    invitationIssuedAt: Date;
+    invitationExpiresAt: Date;
+    capabilityVersion: number;
+    ttlMs: number;
+    now?: Date;
+  }): Promise<BootstrapSession> {
+    const now = input.now ?? new Date();
+    if (
+      !/^[0-9a-f]{64}$/.test(input.nonceHash) ||
+      input.capabilityVersion !== 1 ||
+      input.invitationIssuedAt >= input.invitationExpiresAt ||
+      input.invitationExpiresAt.getTime() + 15_000 < now.getTime()
+    )
+      throw new DomainError(
+        "QR_INVITATION_INVALID",
+        400,
+        "Invitation is invalid",
+      );
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const found = await client.query(
+        "SELECT * FROM devices WHERE device_id=$1 FOR UPDATE",
+        [input.deviceId],
+      );
+      const row = found.rows[0] as Record<string, unknown> | undefined;
+      if (!row)
+        throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+      if (String(row.organization_id) !== input.organizationId)
+        throw new DomainError(
+          "CROSS_ORGANIZATION_DENIED",
+          403,
+          "Device is not owned by this organization",
+        );
+      if (String(row.ownership_version) !== input.ownershipVersion)
+        throw new DomainError(
+          "OWNERSHIP_VERSION_MISMATCH",
+          409,
+          "Device ownership changed",
+        );
+      if (String(row.lifecycle) !== "CLAIMED")
+        throw new DomainError(
+          "QR_ONBOARDING_NOT_ALLOWED",
+          409,
+          "Device lifecycle is not eligible for onboarding",
+        );
+      const replay = await client.query(
+        "SELECT 1 FROM qr_onboarding_nonces WHERE nonce_hash=$1",
+        [input.nonceHash],
+      );
+      if (replay.rowCount)
+        throw new DomainError(
+          "QR_INVITATION_REPLAYED",
+          409,
+          "Invitation was already used",
+        );
+      const active = await client.query(
+        `SELECT 1 FROM bootstrap_sessions
+          WHERE device_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL
+            AND expires_at > $2 FOR UPDATE`,
+        [input.deviceId, now],
+      );
+      if (active.rowCount)
+        throw new DomainError(
+          "ACTIVE_BOOTSTRAP_SESSION_EXISTS",
+          409,
+          "An active onboarding session already exists",
+        );
+      await client.query(
+        `UPDATE bootstrap_sessions SET invalidated_at=$2
+          WHERE device_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL`,
+        [input.deviceId, now],
+      );
+      const sessionToken = randomBytes(32).toString("base64url");
+      const sessionId = randomUUID();
+      const expiresAt = new Date(now.getTime() + input.ttlMs);
+      await client.query(
+        `INSERT INTO bootstrap_sessions
+           (id, device_id, token_hash, expires_at, created_at)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [sessionId, input.deviceId, secretDigest(sessionToken), expiresAt, now],
+      );
+      await client.query(
+        `INSERT INTO qr_onboarding_nonces
+           (nonce_hash, device_id, organization_id, ownership_version,
+            session_id, capability_version, invitation_issued_at,
+            invitation_expires_at, created_by, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [
+          input.nonceHash,
+          input.deviceId,
+          input.organizationId,
+          input.ownershipVersion,
+          sessionId,
+          input.capabilityVersion,
+          input.invitationIssuedAt,
+          input.invitationExpiresAt,
+          input.actorSubjectId,
+          now,
+        ],
+      );
+      await client.query(
+        `INSERT INTO device_transitions
+           (device_id, from_lifecycle, to_lifecycle, actor_subject_id, reason, occurred_at)
+         VALUES ($1,'CLAIMED','CLAIMED',$2,'QR_ONBOARDING_SESSION_ISSUED',$3)`,
+        [input.deviceId, input.actorSubjectId, now],
+      );
+      await client.query("COMMIT");
+      return {
+        schema: "urn:algaguard:schema:onboarding:bootstrap-session:v1",
+        schemaVersion: "1.0.0",
+        sessionId,
+        deviceId: input.deviceId,
+        createdAt: now.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+        serviceUuid: CANONICAL_BLE_PROVISIONING_SERVICE_UUID,
+        sessionToken,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async consumeBootstrap(
     deviceId: string,
     sessionToken: string,

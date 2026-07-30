@@ -16,6 +16,10 @@ import {
 import { DeviceCredentialService } from "./credential-service.js";
 import { PhysicalSessionHandoffService } from "./physical-session-handoff.js";
 import { developmentOnboardingWindowMs } from "./development-onboarding-policy.js";
+import {
+  decodeQrOnboardingInvitation,
+  QrOnboardingService,
+} from "./qr-onboarding.js";
 
 export interface RouteDependencies {
   repository: DeviceRepository;
@@ -27,6 +31,7 @@ export interface RouteDependencies {
   physicalSessionHandoff?: PhysicalSessionHandoffService;
   ownedDeviceBootstrapReissueEnabled?: boolean;
   developmentOnboardingWindowMs?: number;
+  qrOnboarding?: QrOnboardingService;
   httpBodyLimit?: string;
 }
 
@@ -220,6 +225,47 @@ export function createRouter(dependencies: RouteDependencies) {
       response.status(201).json(session);
     },
   );
+
+  router.post("/device-onboarding/qr/exchange", async (request, response) => {
+    const service = dependencies.qrOnboarding;
+    if (!service)
+      throw new DomainError(
+        "QR_ONBOARDING_DISABLED",
+        404,
+        "QR onboarding is unavailable",
+      );
+    const input = z
+      .object({
+        schema: z.literal(
+          "urn:algaguard:schema:onboarding:qr-onboarding-exchange-request:v1",
+        ),
+        schemaVersion: z.literal("1.0.0"),
+        invitationUri: z.string().regex(/^ag:\/\/q\/[A-Za-z0-9_-]{42}$/),
+        ownershipVersion: z.string().regex(/^[1-9][0-9]{0,18}$/),
+      })
+      .strict()
+      .parse(request.body);
+    const invitation = decodeQrOnboardingInvitation(input.invitationUri);
+    const device = await repository.getDeviceById(invitation.deviceId);
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    const actor = await requireAccess(
+      request,
+      "device.credentials.bootstrap",
+      "device",
+      device.deviceUuid,
+      device.organizationId,
+    );
+    response.setHeader("Cache-Control", "no-store");
+    response.status(201).json(
+      await service.exchange({
+        invitationUri: input.invitationUri,
+        ownershipVersion: input.ownershipVersion,
+        actorSubjectId: actor.subjectId,
+        expectedOrganizationId: device.organizationId,
+      }),
+    );
+  });
 
   router.post("/devices/:id/ownership-transfer", async (request, response) => {
     const deviceUuid = z.string().uuid().parse(request.params.id);

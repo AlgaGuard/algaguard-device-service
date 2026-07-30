@@ -192,6 +192,18 @@ export interface DeviceRepository {
     ttlMs: number;
     now?: Date;
   }): Promise<BootstrapSession>;
+  createQrOnboardingSession(input: {
+    deviceId: string;
+    organizationId: string;
+    ownershipVersion: string;
+    actorSubjectId: string;
+    nonceHash: string;
+    invitationIssuedAt: Date;
+    invitationExpiresAt: Date;
+    capabilityVersion: number;
+    ttlMs: number;
+    now?: Date;
+  }): Promise<BootstrapSession>;
   consumeBootstrap(
     deviceId: string,
     sessionToken: string,
@@ -287,6 +299,7 @@ export class MemoryDeviceRepository implements DeviceRepository {
   private readonly devices = new Map<string, DeviceRecord>();
   private readonly claims = new Map<string, MemoryClaim>();
   private readonly bootstrap = new Map<string, MemoryBootstrap>();
+  private readonly qrNonceHashes = new Set<string>();
   private readonly failures = new Map<string, number[]>();
   private readonly statuses = new Map<string, Record<string, unknown>>();
   private readonly healthValues = new Map<string, Record<string, unknown>>();
@@ -538,6 +551,55 @@ export class MemoryDeviceRepository implements DeviceRepository {
       serviceUuid: CANONICAL_BLE_PROVISIONING_SERVICE_UUID,
       sessionToken,
     };
+  }
+
+  async createQrOnboardingSession(input: {
+    deviceId: string;
+    organizationId: string;
+    ownershipVersion: string;
+    actorSubjectId: string;
+    nonceHash: string;
+    invitationIssuedAt: Date;
+    invitationExpiresAt: Date;
+    capabilityVersion: number;
+    ttlMs: number;
+    now?: Date;
+  }): Promise<BootstrapSession> {
+    const now = input.now ?? new Date();
+    if (
+      !/^[0-9a-f]{64}$/.test(input.nonceHash) ||
+      input.capabilityVersion !== 1 ||
+      input.invitationIssuedAt >= input.invitationExpiresAt ||
+      input.invitationExpiresAt.getTime() + 15_000 < now.getTime()
+    )
+      throw new DomainError(
+        "QR_INVITATION_INVALID",
+        400,
+        "Invitation is invalid",
+      );
+    if (this.qrNonceHashes.has(input.nonceHash))
+      throw new DomainError(
+        "QR_INVITATION_REPLAYED",
+        409,
+        "Invitation was already used",
+      );
+    const device = this.devices.get(input.deviceId);
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    this.qrNonceHashes.add(input.nonceHash);
+    try {
+      return await this.reissueBootstrapSession({
+        deviceUuid: device.deviceUuid,
+        organizationId: input.organizationId,
+        ownershipVersion: input.ownershipVersion,
+        actorSubjectId: input.actorSubjectId,
+        ttlMs: input.ttlMs,
+        now,
+      });
+    } catch (error) {
+      this.qrNonceHashes.delete(input.nonceHash);
+      throw error;
+    }
   }
 
   async consumeBootstrap(

@@ -16,6 +16,9 @@ const logger = pino({
     "req.headers.authorization",
     "claimCode",
     "sessionToken",
+    "invitationUri",
+    "bindingGrant",
+    "nonce",
     "deviceCode",
     "userCode",
     "encryptedBundle",
@@ -29,6 +32,7 @@ const logger = pino({
     "certificatePem",
     "privateKey",
     "privateKeyPem",
+    "QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8",
   ],
 });
 
