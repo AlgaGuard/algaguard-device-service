@@ -32,22 +32,32 @@ const logger = pino({
   ],
 });
 
+function safeRequestPath(path: string) {
+  return path
+    .replace(
+      /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi,
+      ":uuid",
+    )
+    .replace(/\bAG-[0-9]{6}\b/g, ":device");
+}
+
 const requestContext: RequestHandler = (request, response, next) => {
   const supplied = request.header("x-correlation-id");
   const correlationId =
     supplied && supplied.length <= 128 ? supplied : randomUUID();
   request.headers["x-correlation-id"] = correlationId;
   response.setHeader("x-correlation-id", correlationId);
+  const path = safeRequestPath(request.path);
   const span = trace
     .getTracer("algaguard-device-service")
-    .startSpan(`${request.method} ${request.path}`);
+    .startSpan(`${request.method} ${path}`);
   const startedAt = Date.now();
   response.on("finish", () => {
     logger.info(
       {
         correlationId,
         method: request.method,
-        path: request.path,
+        path,
         status: response.statusCode,
         durationMs: Date.now() - startedAt,
       },

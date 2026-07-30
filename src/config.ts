@@ -9,6 +9,9 @@ const environmentSchema = z
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.string().url(),
     ALGAGUARD_ENABLE_PHYSICAL_SESSION_HANDOFF: z.enum(["0", "1"]).default("0"),
+    ALGAGUARD_ENABLE_OWNED_DEVICE_BOOTSTRAP_REISSUE: z
+      .enum(["0", "1"])
+      .default("0"),
     PHYSICAL_SESSION_HANDOFF_WRAPPING_KEY: z.string().min(1).optional(),
     HTTP_BODY_LIMIT: z
       .string()
@@ -78,6 +81,16 @@ const environmentSchema = z
       .default("info"),
   })
   .superRefine((value, context) => {
+    if (
+      value.ALGAGUARD_ENABLE_OWNED_DEVICE_BOOTSTRAP_REISSUE === "1" &&
+      value.NODE_ENV !== "development" &&
+      value.NODE_ENV !== "test"
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["ALGAGUARD_ENABLE_OWNED_DEVICE_BOOTSTRAP_REISSUE"],
+        message: "owned-device bootstrap reissue is development-only",
+      });
     if (value.ALGAGUARD_ENABLE_PHYSICAL_SESSION_HANDOFF === "1") {
       if (value.NODE_ENV !== "development" && value.NODE_ENV !== "test")
         context.addIssue({

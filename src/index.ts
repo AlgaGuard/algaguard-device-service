@@ -86,6 +86,8 @@ const server = buildApp({
       }
     : {}),
   ...(physicalSessionHandoff ? { physicalSessionHandoff } : {}),
+  ownedDeviceBootstrapReissueEnabled:
+    config.ALGAGUARD_ENABLE_OWNED_DEVICE_BOOTSTRAP_REISSUE === "1",
   httpBodyLimit: config.HTTP_BODY_LIMIT,
 }).listen(config.PORT, () => {
   process.stdout.write(

@@ -306,6 +306,24 @@ export class PostgresDeviceRepository implements DeviceRepository {
          VALUES ($1, $2, 'CLAIMED', $3, 'CLAIM_CONSUMED', $4)`,
         [input.deviceId, row.lifecycle, input.subjectId, now],
       );
+      const openBootstrap = await client.query(
+        `SELECT 1 FROM bootstrap_sessions
+          WHERE device_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL
+            AND expires_at > $2
+          FOR UPDATE`,
+        [input.deviceId, now],
+      );
+      if (openBootstrap.rowCount)
+        throw new DomainError(
+          "ACTIVE_BOOTSTRAP_SESSION_EXISTS",
+          409,
+          "An active bootstrap session already exists",
+        );
+      await client.query(
+        `UPDATE bootstrap_sessions SET invalidated_at=$2
+          WHERE device_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL`,
+        [input.deviceId, now],
+      );
       const sessionToken = randomBytes(32).toString("base64url");
       const sessionId = randomUUID();
       const expiresAt = new Date(now.getTime() + 5 * 60_000);
@@ -339,6 +357,95 @@ export class PostgresDeviceRepository implements DeviceRepository {
     }
   }
 
+  async reissueBootstrapSession(input: {
+    deviceUuid: string;
+    organizationId: string;
+    ownershipVersion: string;
+    actorSubjectId: string;
+    ttlMs: number;
+    now?: Date;
+  }): Promise<BootstrapSession> {
+    const now = input.now ?? new Date();
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const found = await client.query(
+        "SELECT * FROM devices WHERE device_uuid=$1 FOR UPDATE",
+        [input.deviceUuid],
+      );
+      const row = found.rows[0] as Record<string, unknown> | undefined;
+      if (!row)
+        throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+      if (String(row.organization_id) !== input.organizationId)
+        throw new DomainError(
+          "CROSS_ORGANIZATION_DENIED",
+          403,
+          "Device is not owned by this organization",
+        );
+      if (String(row.ownership_version) !== input.ownershipVersion)
+        throw new DomainError(
+          "OWNERSHIP_VERSION_MISMATCH",
+          409,
+          "Device ownership changed",
+        );
+      if (String(row.lifecycle) !== "CLAIMED")
+        throw new DomainError(
+          "BOOTSTRAP_REISSUE_NOT_ALLOWED",
+          409,
+          "Device lifecycle is not eligible for reissue",
+        );
+      const active = await client.query(
+        `SELECT 1 FROM bootstrap_sessions
+          WHERE device_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL
+            AND expires_at > $2
+          FOR UPDATE`,
+        [row.device_id, now],
+      );
+      if (active.rowCount)
+        throw new DomainError(
+          "ACTIVE_BOOTSTRAP_SESSION_EXISTS",
+          409,
+          "An active bootstrap session already exists",
+        );
+      await client.query(
+        `UPDATE bootstrap_sessions SET invalidated_at=$2
+          WHERE device_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL`,
+        [row.device_id, now],
+      );
+      const sessionToken = randomBytes(32).toString("base64url");
+      const sessionId = randomUUID();
+      const expiresAt = new Date(now.getTime() + input.ttlMs);
+      await client.query(
+        `INSERT INTO bootstrap_sessions
+           (id, device_id, token_hash, expires_at, created_at)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [sessionId, row.device_id, secretDigest(sessionToken), expiresAt, now],
+      );
+      await client.query(
+        `INSERT INTO device_transitions
+           (device_id, from_lifecycle, to_lifecycle, actor_subject_id, reason, occurred_at)
+         VALUES ($1,'CLAIMED','CLAIMED',$2,'BOOTSTRAP_SESSION_REISSUED',$3)`,
+        [row.device_id, input.actorSubjectId, now],
+      );
+      await client.query("COMMIT");
+      return {
+        schema: "urn:algaguard:schema:onboarding:bootstrap-session:v1",
+        schemaVersion: "1.0.0",
+        sessionId,
+        deviceId: String(row.device_id),
+        createdAt: now.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+        serviceUuid: BLE_SERVICE_UUID,
+        sessionToken,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async consumeBootstrap(
     deviceId: string,
     sessionToken: string,
@@ -350,7 +457,7 @@ export class PostgresDeviceRepository implements DeviceRepository {
       const found = await client.query(
         `SELECT b.*, d.lifecycle FROM bootstrap_sessions b
           JOIN devices d ON d.device_id = b.device_id
-         WHERE b.device_id = $1 AND b.token_hash = $2
+         WHERE b.device_id = $1 AND b.token_hash = $2 AND b.invalidated_at IS NULL
          FOR UPDATE OF b, d`,
         [deviceId, secretDigest(sessionToken)],
       );
@@ -399,7 +506,7 @@ export class PostgresDeviceRepository implements DeviceRepository {
       await client.query("BEGIN");
       const found = await client.query(
         `SELECT b.*, d.* FROM bootstrap_sessions b JOIN devices d ON d.device_id=b.device_id
-          WHERE b.token_hash=$1 FOR UPDATE OF b, d`,
+          WHERE b.token_hash=$1 AND b.invalidated_at IS NULL FOR UPDATE OF b, d`,
         [secretDigest(sessionToken)],
       );
       const row = found.rows[0] as Record<string, unknown> | undefined;
@@ -454,7 +561,7 @@ export class PostgresDeviceRepository implements DeviceRepository {
   ) {
     const result = await this.pool.query(
       `SELECT b.*, d.* FROM bootstrap_sessions b JOIN devices d ON d.device_id=b.device_id
-        WHERE b.token_hash=$1 AND b.device_id=$2`,
+        WHERE b.token_hash=$1 AND b.device_id=$2 AND b.invalidated_at IS NULL`,
       [secretDigest(sessionToken), expectedDeviceId],
     );
     const row = result.rows[0] as Record<string, unknown> | undefined;

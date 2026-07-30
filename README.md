@@ -37,6 +37,17 @@ one-time; replay and expiry fail closed. Codes, session tokens, ciphertext, and
 approval/redeem bodies are not logged or stored in PostgreSQL, files, or
 plaintext Redis. This foundation does not perform physical provisioning.
 
+## Development-only owned-device bootstrap reissue
+
+`ALGAGUARD_ENABLE_OWNED_DEVICE_BOOTSTRAP_REISSUE` is disabled by default and
+rejected outside development/test. When explicitly enabled, an authenticated
+current owner may call the bounded reissue operation for an existing `CLAIMED`
+device while presenting the current `ownershipVersion`. The operation rejects
+another active session, invalidates only expired open sessions, returns one new
+short-lived session with `Cache-Control: no-store`, and persists only its token
+hash. It never creates a claim/device/ownership row or changes lifecycle,
+organization, or ownership version.
+
 ## Device certificates
 
 `DeviceCredentialService` accepts CSR public material only. It binds the canonical `deviceId` to the certificate CN and the immutable `deviceUuid` to exactly one SAN URI, stores the SHA-256 fingerprint plus public certificate metadata, and retains issuance, rotation, revocation, and audit history. No device private key or CA private key is accepted by an API, stored in PostgreSQL, or returned in a response.

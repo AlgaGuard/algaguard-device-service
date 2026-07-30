@@ -72,9 +72,35 @@ test(
       (error: unknown) =>
         error instanceof DomainError && error.code === "CLAIM_UNAVAILABLE",
     );
+    const deviceBeforeReissue = await restarted.getDevice(created.deviceUuid);
+    const reissueNow = new Date(Date.now() + 301_000);
+    const reissued = await restarted.reissueBootstrapSession({
+      deviceUuid: created.deviceUuid,
+      organizationId,
+      ownershipVersion: "1",
+      actorSubjectId: "owner",
+      ttlMs: 300_000,
+      now: reissueNow,
+    });
+    const storedReissue = await restarted.pool.query(
+      "SELECT token_hash FROM bootstrap_sessions WHERE id=$1",
+      [reissued.sessionId],
+    );
+    assert.match(String(storedReissue.rows[0].token_hash), /^[0-9a-f]{64}$/);
+    assert.notEqual(storedReissue.rows[0].token_hash, reissued.sessionToken);
+    const deviceAfterReissue = await restarted.getDevice(created.deviceUuid);
+    assert.equal(
+      deviceAfterReissue?.organizationId,
+      deviceBeforeReissue?.organizationId,
+    );
+    assert.equal(
+      deviceAfterReissue?.ownershipVersion,
+      deviceBeforeReissue?.ownershipVersion,
+    );
     await restarted.consumeBootstrap(
       created.deviceId,
-      successful.value.bootstrap.sessionToken,
+      reissued.sessionToken,
+      new Date(reissueNow.getTime() + 1),
     );
     await restarted.close();
 

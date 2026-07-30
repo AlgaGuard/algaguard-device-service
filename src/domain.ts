@@ -182,6 +182,14 @@ export interface DeviceRepository {
     subjectId: string;
     now?: Date;
   }): Promise<{ device: DeviceRecord; bootstrap: BootstrapSession }>;
+  reissueBootstrapSession(input: {
+    deviceUuid: string;
+    organizationId: string;
+    ownershipVersion: string;
+    actorSubjectId: string;
+    ttlMs: number;
+    now?: Date;
+  }): Promise<BootstrapSession>;
   consumeBootstrap(
     deviceId: string,
     sessionToken: string,
@@ -235,6 +243,41 @@ interface MemoryBootstrap {
   createdAt: number;
   expiresAt: number;
   consumedAt?: number;
+  invalidatedAt?: number;
+}
+
+export interface PreparationRecordAudit {
+  organizationOwned: boolean;
+  ownershipVersionPresent: boolean;
+  dependencyCount: number;
+  canonicalConflict: boolean;
+  identityConflict: boolean;
+}
+
+export type PreparationRecordDisposition =
+  | "EMPTY_UNOWNED_PREPARATION_RECORD"
+  | "OWNED_OR_REFERENCED_LEGITIMATE_RECORD"
+  | "DUPLICATE_OR_CONFLICTING_RECORD"
+  | "UNKNOWN_UNSAFE_TO_CHANGE";
+
+export function classifyPreparationRecord(
+  audit: PreparationRecordAudit,
+): PreparationRecordDisposition {
+  if (audit.canonicalConflict || audit.identityConflict)
+    return "DUPLICATE_OR_CONFLICTING_RECORD";
+  if (audit.organizationOwned || audit.dependencyCount > 0)
+    return "OWNED_OR_REFERENCED_LEGITIMATE_RECORD";
+  if (!audit.ownershipVersionPresent && audit.dependencyCount === 0)
+    return "EMPTY_UNOWNED_PREPARATION_RECORD";
+  return "UNKNOWN_UNSAFE_TO_CHANGE";
+}
+
+export function mayResolveEmptyPreparationRecord(
+  audit: PreparationRecordAudit,
+) {
+  return (
+    classifyPreparationRecord(audit) === "EMPTY_UNOWNED_PREPARATION_RECORD"
+  );
 }
 
 export class MemoryDeviceRepository implements DeviceRepository {
@@ -391,6 +434,19 @@ export class MemoryDeviceRepository implements DeviceRepository {
         403,
         "Claim is not authorized for this organization",
       );
+    const openSessions = [...this.bootstrap.values()].filter(
+      (value) =>
+        value.deviceId === device.deviceId &&
+        !value.consumedAt &&
+        !value.invalidatedAt,
+    );
+    if (openSessions.some((value) => value.expiresAt > now))
+      throw new DomainError(
+        "ACTIVE_BOOTSTRAP_SESSION_EXISTS",
+        409,
+        "An active bootstrap session already exists",
+      );
+    for (const value of openSessions) value.invalidatedAt = now;
     claim.consumedAt = now;
     device.lifecycle = "CLAIMED";
     device.updatedAt = new Date(now).toISOString();
@@ -418,6 +474,70 @@ export class MemoryDeviceRepository implements DeviceRepository {
     };
   }
 
+  async reissueBootstrapSession(input: {
+    deviceUuid: string;
+    organizationId: string;
+    ownershipVersion: string;
+    actorSubjectId: string;
+    ttlMs: number;
+    now?: Date;
+  }): Promise<BootstrapSession> {
+    const now = input.now?.getTime() ?? Date.now();
+    const device = [...this.devices.values()].find(
+      (candidate) => candidate.deviceUuid === input.deviceUuid,
+    );
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    if (device.organizationId !== input.organizationId)
+      throw new DomainError(
+        "CROSS_ORGANIZATION_DENIED",
+        403,
+        "Device is not owned by this organization",
+      );
+    if (device.ownershipVersion !== input.ownershipVersion)
+      throw new DomainError(
+        "OWNERSHIP_VERSION_MISMATCH",
+        409,
+        "Device ownership changed",
+      );
+    if (device.lifecycle !== "CLAIMED")
+      throw new DomainError(
+        "BOOTSTRAP_REISSUE_NOT_ALLOWED",
+        409,
+        "Device lifecycle is not eligible for reissue",
+      );
+    const sessions = [...this.bootstrap.values()].filter(
+      (value) => value.deviceId === device.deviceId && !value.consumedAt,
+    );
+    if (sessions.some((value) => !value.invalidatedAt && value.expiresAt > now))
+      throw new DomainError(
+        "ACTIVE_BOOTSTRAP_SESSION_EXISTS",
+        409,
+        "An active bootstrap session already exists",
+      );
+    for (const session of sessions)
+      if (!session.invalidatedAt) session.invalidatedAt = now;
+    const sessionToken = randomBytes(32).toString("base64url");
+    const session: MemoryBootstrap = {
+      id: randomUUID(),
+      deviceId: device.deviceId,
+      tokenHash: secretDigest(sessionToken),
+      createdAt: now,
+      expiresAt: now + input.ttlMs,
+    };
+    this.bootstrap.set(session.id, session);
+    return {
+      schema: "urn:algaguard:schema:onboarding:bootstrap-session:v1",
+      schemaVersion: "1.0.0",
+      sessionId: session.id,
+      deviceId: device.deviceId,
+      createdAt: new Date(session.createdAt).toISOString(),
+      expiresAt: new Date(session.expiresAt).toISOString(),
+      serviceUuid: BLE_SERVICE_UUID,
+      sessionToken,
+    };
+  }
+
   async consumeBootstrap(
     deviceId: string,
     sessionToken: string,
@@ -427,7 +547,12 @@ export class MemoryDeviceRepository implements DeviceRepository {
     const session = [...this.bootstrap.values()].find(
       (value) => value.deviceId === deviceId && value.tokenHash === digest,
     );
-    if (!session || session.consumedAt || session.expiresAt <= now.getTime())
+    if (
+      !session ||
+      session.consumedAt ||
+      session.invalidatedAt ||
+      session.expiresAt <= now.getTime()
+    )
       throw new DomainError(
         "BOOTSTRAP_UNAVAILABLE",
         410,
@@ -462,7 +587,7 @@ export class MemoryDeviceRepository implements DeviceRepository {
         400,
         "Session does not match device",
       );
-    if (session.consumedAt)
+    if (session.consumedAt || session.invalidatedAt)
       throw new DomainError(
         "USED_SESSION_TOKEN",
         401,
@@ -502,7 +627,11 @@ export class MemoryDeviceRepository implements DeviceRepository {
         401,
         "Session token is unavailable",
       );
-    if (session.consumedAt || session.expiresAt <= now.getTime())
+    if (
+      session.consumedAt ||
+      session.invalidatedAt ||
+      session.expiresAt <= now.getTime()
+    )
       throw new DomainError(
         "EXPIRED_SESSION_TOKEN",
         401,

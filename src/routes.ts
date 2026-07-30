@@ -24,6 +24,7 @@ export interface RouteDependencies {
   credentialLifecycle?: DeviceCredentialService;
   authenticateBroker?: (authorization: string | undefined) => void;
   physicalSessionHandoff?: PhysicalSessionHandoffService;
+  ownedDeviceBootstrapReissueEnabled?: boolean;
   httpBodyLimit?: string;
 }
 
@@ -157,6 +158,49 @@ export function createRouter(dependencies: RouteDependencies) {
         ),
       );
   });
+
+  router.post(
+    "/devices/:id/bootstrap-sessions/reissue",
+    async (request, response) => {
+      if (!dependencies.ownedDeviceBootstrapReissueEnabled)
+        throw new DomainError(
+          "OWNED_DEVICE_BOOTSTRAP_REISSUE_DISABLED",
+          404,
+          "Development bootstrap reissue is unavailable",
+        );
+      const deviceUuid = z.string().uuid().parse(request.params.id);
+      const device = await repository.getDevice(deviceUuid);
+      if (!device)
+        throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+      const actor = await requireAccess(
+        request,
+        "device.manage",
+        "device",
+        deviceUuid,
+        device.organizationId,
+      );
+      const input = z
+        .object({
+          schema: z.literal(
+            "urn:algaguard:schema:onboarding:owned-device-bootstrap-reissue-request:v1",
+          ),
+          schemaVersion: z.literal("1.0.0"),
+          ownershipVersion: z.string().regex(/^[1-9][0-9]{0,18}$/),
+          expiresInSeconds: z.number().int().min(60).max(600),
+        })
+        .strict()
+        .parse(request.body);
+      const session = await repository.reissueBootstrapSession({
+        deviceUuid,
+        organizationId: device.organizationId,
+        ownershipVersion: input.ownershipVersion,
+        actorSubjectId: actor.subjectId,
+        ttlMs: input.expiresInSeconds * 1000,
+      });
+      response.setHeader("Cache-Control", "no-store");
+      response.status(201).json(session);
+    },
+  );
 
   router.post("/devices/:id/ownership-transfer", async (request, response) => {
     const deviceUuid = z.string().uuid().parse(request.params.id);
