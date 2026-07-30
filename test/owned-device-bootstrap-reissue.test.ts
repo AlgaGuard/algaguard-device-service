@@ -84,11 +84,19 @@ function app(repository: MemoryDeviceRepository, authorize = allow) {
 
 test("1 current owner can reissue one bootstrap session", async () => {
   const value = await claimed();
+  let requestedAction: string | undefined;
+  const authorize: AccessAuthorizer = {
+    async authorize(input) {
+      requestedAction = input.action;
+      return true;
+    },
+    async registerDevice() {},
+  };
   const internal = value.repository as unknown as {
     bootstrap: Map<string, { invalidatedAt?: number }>;
   };
   internal.bootstrap.get(value.original.sessionId)!.invalidatedAt = Date.now();
-  const response = await request(app(value.repository))
+  const response = await request(app(value.repository, authorize))
     .post(`/v1/devices/${value.device.deviceUuid}/bootstrap-sessions/reissue`)
     .set("authorization", "Bearer user")
     .send({
@@ -99,6 +107,7 @@ test("1 current owner can reissue one bootstrap session", async () => {
       expiresInSeconds: 300,
     });
   assert.equal(response.status, 201);
+  assert.equal(requestedAction, "device.bootstrap.reissue");
   assert.equal(response.headers["cache-control"], "no-store");
   assert.notEqual(response.body.sessionId, value.original.sessionId);
   assert.equal(response.body.schemaVersion, "1.0.0");

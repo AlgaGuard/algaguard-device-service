@@ -174,7 +174,7 @@ export function createRouter(dependencies: RouteDependencies) {
         throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
       const actor = await requireAccess(
         request,
-        "device.manage",
+        "device.bootstrap.reissue",
         "device",
         deviceUuid,
         device.organizationId,
