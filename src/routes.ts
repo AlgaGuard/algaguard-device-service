@@ -323,7 +323,7 @@ export function createRouter(dependencies: RouteDependencies) {
           );
         await requireAccess(
           request,
-          "device.claim",
+          "device.physical-session-handoff.approve",
           "device",
           device.deviceUuid,
           device.organizationId,

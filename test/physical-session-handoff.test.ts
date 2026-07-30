@@ -126,8 +126,11 @@ test("approval requires authentication and matching organization and device owne
     if (!authorization) throw new AuthenticationError("Bearer token required");
     return { subjectId: "test-user", service: false };
   };
+  let requestedAuthorization:
+    Parameters<AccessAuthorizer["authorize"]>[0] | undefined;
   const authorize: AccessAuthorizer = {
-    async authorize() {
+    async authorize(input) {
+      requestedAuthorization = input;
       return true;
     },
     async registerDevice() {},
@@ -158,6 +161,23 @@ test("approval requires authentication and matching organization and device owne
       authorizedOwnershipVersion: active.device.ownershipVersion,
     }),
   );
+  const approved = await request(instance)
+    .post("/v1/development/physical-session-handoffs/approve")
+    .set("authorization", "Bearer user")
+    .send({
+      protocolVersion: 1,
+      userCode: handoff.userCode,
+      sessionId: active.bootstrap.sessionId,
+      deviceId: active.device.deviceId,
+      sessionToken: active.bootstrap.sessionToken,
+    });
+  assert.equal(approved.status, 204);
+  assert.equal(
+    requestedAuthorization?.action,
+    "device.physical-session-handoff.approve",
+  );
+  assert.equal(requestedAuthorization?.resourceId, active.device.deviceUuid);
+  assert.equal(requestedAuthorization?.organizationId, organizationId);
 });
 
 test("wrong device, organization, and ownership-version changes are rejected", async () => {
