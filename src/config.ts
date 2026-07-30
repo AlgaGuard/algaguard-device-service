@@ -12,6 +12,11 @@ const environmentSchema = z
     ALGAGUARD_ENABLE_OWNED_DEVICE_BOOTSTRAP_REISSUE: z
       .enum(["0", "1"])
       .default("0"),
+    ALGAGUARD_ENABLE_DEMO_TELEMETRY_SIMULATOR: z.enum(["0", "1"]).default("0"),
+    TELEMETRY_SERVICE_URL: z.string().url().optional(),
+    KEYCLOAK_TOKEN_URL: z.string().url().optional(),
+    SERVICE_CLIENT_ID: z.string().min(1).optional(),
+    SERVICE_CLIENT_SECRET: z.string().min(1).optional(),
     PHYSICAL_SESSION_HANDOFF_WRAPPING_KEY: z.string().min(1).optional(),
     HTTP_BODY_LIMIT: z
       .string()
@@ -81,6 +86,26 @@ const environmentSchema = z
       .default("info"),
   })
   .superRefine((value, context) => {
+    if (value.ALGAGUARD_ENABLE_DEMO_TELEMETRY_SIMULATOR === "1") {
+      if (value.NODE_ENV !== "development" && value.NODE_ENV !== "test")
+        context.addIssue({
+          code: "custom",
+          path: ["ALGAGUARD_ENABLE_DEMO_TELEMETRY_SIMULATOR"],
+          message: "demo telemetry simulator is development-only",
+        });
+      for (const field of [
+        "TELEMETRY_SERVICE_URL",
+        "KEYCLOAK_TOKEN_URL",
+        "SERVICE_CLIENT_ID",
+        "SERVICE_CLIENT_SECRET",
+      ] as const)
+        if (!value[field])
+          context.addIssue({
+            code: "custom",
+            path: [field],
+            message: `${field} is required for the demo telemetry simulator`,
+          });
+    }
     if (
       value.ALGAGUARD_ENABLE_OWNED_DEVICE_BOOTSTRAP_REISSUE === "1" &&
       value.NODE_ENV !== "development" &&
