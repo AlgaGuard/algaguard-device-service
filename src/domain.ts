@@ -1,6 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
-export const BLE_SERVICE_UUID = "a19a0001-7e4d-4b1a-9c2d-000000000001";
+/** Generated from bootstrap-session-v1.schema.json. */
+export const CANONICAL_BLE_PROVISIONING_SERVICE_UUID =
+  "0000a1a0-0000-1000-8000-00805f9b34fb" as const;
 
 export type DeviceLifecycle =
   | "UNCLAIMED"
@@ -57,7 +59,7 @@ export interface BootstrapSession {
   deviceId: string;
   createdAt: string;
   expiresAt: string;
-  serviceUuid: string;
+  serviceUuid: typeof CANONICAL_BLE_PROVISIONING_SERVICE_UUID;
   sessionToken: string;
 }
 
@@ -468,7 +470,7 @@ export class MemoryDeviceRepository implements DeviceRepository {
         deviceId: device.deviceId,
         createdAt: new Date(session.createdAt).toISOString(),
         expiresAt: new Date(session.expiresAt).toISOString(),
-        serviceUuid: BLE_SERVICE_UUID,
+        serviceUuid: CANONICAL_BLE_PROVISIONING_SERVICE_UUID,
         sessionToken,
       },
     };
@@ -533,7 +535,7 @@ export class MemoryDeviceRepository implements DeviceRepository {
       deviceId: device.deviceId,
       createdAt: new Date(session.createdAt).toISOString(),
       expiresAt: new Date(session.expiresAt).toISOString(),
-      serviceUuid: BLE_SERVICE_UUID,
+      serviceUuid: CANONICAL_BLE_PROVISIONING_SERVICE_UUID,
       sessionToken,
     };
   }

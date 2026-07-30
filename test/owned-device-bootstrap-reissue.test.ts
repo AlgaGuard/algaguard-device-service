@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import request from "supertest";
 import { buildApp } from "../src/app.js";
@@ -7,10 +10,41 @@ import type { AccessAuthorizer, Authenticator } from "../src/auth.js";
 import { loadConfig } from "../src/config.js";
 import {
   classifyPreparationRecord,
+  CANONICAL_BLE_PROVISIONING_SERVICE_UUID,
   DomainError,
   mayResolveEmptyPreparationRecord,
   MemoryDeviceRepository,
 } from "../src/domain.js";
+
+const require = createRequire(import.meta.url);
+const Ajv2020 = require("ajv/dist/2020.js").default;
+const addFormats = require("ajv-formats").default;
+
+const contractRoot = path.resolve(
+  process.env.CONTRACTS_DIR ?? "../algaguard-contracts",
+);
+const bootstrapSessionSchema = JSON.parse(
+  fs.readFileSync(
+    path.join(
+      contractRoot,
+      "schemas/onboarding/bootstrap-session-v1.schema.json",
+    ),
+    "utf8",
+  ),
+) as Record<string, unknown>;
+const deviceReferenceSchema = JSON.parse(
+  fs.readFileSync(
+    path.join(contractRoot, "schemas/common/device-reference-v1.schema.json"),
+    "utf8",
+  ),
+) as Record<string, unknown>;
+
+function bootstrapSessionValidator() {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  addFormats(ajv);
+  ajv.addSchema(deviceReferenceSchema);
+  return ajv.compile(bootstrapSessionSchema);
+}
 
 const organizationId = "10000000-0000-4000-8000-000000000001";
 const authenticate: Authenticator = async () => ({
@@ -68,6 +102,32 @@ test("1 current owner can reissue one bootstrap session", async () => {
   assert.equal(response.headers["cache-control"], "no-store");
   assert.notEqual(response.body.sessionId, value.original.sessionId);
   assert.equal(response.body.schemaVersion, "1.0.0");
+  assert.equal(
+    response.body.serviceUuid,
+    CANONICAL_BLE_PROVISIONING_SERVICE_UUID,
+  );
+  assert.equal(bootstrapSessionValidator()(response.body), true);
+});
+
+test("reissue response is mobile-compatible and rejects the previous UUID", async () => {
+  const value = await claimed();
+  const session = await value.repository.reissueBootstrapSession({
+    deviceUuid: value.device.deviceUuid,
+    organizationId,
+    ownershipVersion: value.device.ownershipVersion,
+    actorSubjectId: "owner",
+    ttlMs: 300_000,
+    now: new Date(Date.now() + 301_000),
+  });
+  const validate = bootstrapSessionValidator();
+  assert.equal(validate(session), true, JSON.stringify(validate.errors));
+  assert.equal(
+    validate({
+      ...session,
+      serviceUuid: "a19a0001-7e4d-4b1a-9c2d-000000000001",
+    }),
+    false,
+  );
 });
 
 test("2 reissue creates no device or ownership row", async () => {
@@ -250,4 +310,21 @@ test("10 only an exact empty unowned preparation record is resolvable", () => {
     classifyPreparationRecord({ ...empty, canonicalConflict: true }),
     "DUPLICATE_OR_CONFLICTING_RECORD",
   );
+});
+
+test("reissue transaction and logs preserve rollback and secret redaction", () => {
+  const repositorySource = fs.readFileSync("src/repository.ts", "utf8");
+  const appSource = fs.readFileSync("src/app.ts", "utf8");
+  const method = repositorySource.slice(
+    repositorySource.indexOf("async reissueBootstrapSession"),
+    repositorySource.indexOf(
+      "async consumeBootstrap",
+      repositorySource.indexOf("async reissueBootstrapSession"),
+    ),
+  );
+  assert.match(method, /await client\.query\("BEGIN"\)/);
+  assert.match(method, /await client\.query\("COMMIT"\)/);
+  assert.match(method, /await client\.query\("ROLLBACK"\)/);
+  assert.match(appSource, /"sessionToken"/);
+  assert.doesNotMatch(method, /logger\.|console\.|sessionToken\s*:/);
 });

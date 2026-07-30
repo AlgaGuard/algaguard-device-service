@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 import {
-  BLE_SERVICE_UUID,
+  CANONICAL_BLE_PROVISIONING_SERVICE_UUID,
   DomainError,
   fallbackCode,
   secretDigest,
@@ -340,7 +340,7 @@ export class PostgresDeviceRepository implements DeviceRepository {
         deviceId: input.deviceId,
         createdAt: iso(inserted.rows[0].created_at as Date),
         expiresAt: expiresAt.toISOString(),
-        serviceUuid: BLE_SERVICE_UUID,
+        serviceUuid: CANONICAL_BLE_PROVISIONING_SERVICE_UUID,
         sessionToken,
       };
       return {
@@ -435,7 +435,7 @@ export class PostgresDeviceRepository implements DeviceRepository {
         deviceId: String(row.device_id),
         createdAt: now.toISOString(),
         expiresAt: expiresAt.toISOString(),
-        serviceUuid: BLE_SERVICE_UUID,
+        serviceUuid: CANONICAL_BLE_PROVISIONING_SERVICE_UUID,
         sessionToken,
       };
     } catch (error) {
