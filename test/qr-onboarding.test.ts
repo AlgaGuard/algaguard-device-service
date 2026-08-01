@@ -35,13 +35,18 @@ function crc16(bytes: Uint8Array) {
 
 function invitation(
   now: Date,
-  overrides: { device?: number; issued?: number; expires?: number } = {},
+  overrides: {
+    device?: number;
+    issued?: number;
+    expires?: number;
+    nonceFill?: number;
+  } = {},
 ) {
   const seconds = Math.floor(now.getTime() / 1000);
   const bytes = Buffer.alloc(31);
   bytes[0] = 1;
   bytes.writeUIntBE(overrides.device ?? 1, 1, 3);
-  Buffer.alloc(16, 0xa5).copy(bytes, 4);
+  Buffer.alloc(16, overrides.nonceFill ?? 0xa5).copy(bytes, 4);
   bytes.writeUInt32BE(overrides.issued ?? seconds, 20);
   bytes.writeUInt32BE(overrides.expires ?? seconds + 180, 24);
   bytes[28] = 1;
@@ -167,6 +172,39 @@ test("replayed nonce is rejected exactly once", async () => {
     (error: unknown) =>
       error instanceof DomainError && error.code === "QR_INVITATION_REPLAYED",
   );
+});
+
+test("fresh QR invalidates previous unconsumed QR session for safe retry", async () => {
+  const now = new Date("2026-07-30T10:00:00.000Z");
+  const value = await owned(now);
+  const first = await service(value.repository, now).exchange({
+    invitationUri: invitation(now, { nonceFill: 0xa5 }),
+    ownershipVersion: "1",
+    actorSubjectId: "owner",
+    expectedOrganizationId: organizationId,
+  });
+  const second = await service(value.repository, now).exchange({
+    invitationUri: invitation(now, { nonceFill: 0x5a }),
+    ownershipVersion: "1",
+    actorSubjectId: "owner",
+    expectedOrganizationId: organizationId,
+  });
+  assert.notEqual(second.sessionId, first.sessionId);
+  await assert.rejects(
+    value.repository.validateBootstrapSession(
+      first.sessionToken,
+      first.deviceId,
+      now,
+    ),
+    (error: unknown) =>
+      error instanceof DomainError && error.code === "EXPIRED_SESSION_TOKEN",
+  );
+  const validation = await value.repository.validateBootstrapSession(
+    second.sessionToken,
+    second.deviceId,
+    now,
+  );
+  assert.equal(validation.sessionId, second.sessionId);
 });
 
 test("wrong organization and ownership change are denied", async () => {

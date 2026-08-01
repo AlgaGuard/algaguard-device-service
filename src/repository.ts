@@ -508,18 +508,12 @@ export class PostgresDeviceRepository implements DeviceRepository {
           409,
           "Invitation was already used",
         );
-      const active = await client.query(
+      await client.query(
         `SELECT 1 FROM bootstrap_sessions
           WHERE device_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL
             AND expires_at > $2 FOR UPDATE`,
         [input.deviceId, now],
       );
-      if (active.rowCount)
-        throw new DomainError(
-          "ACTIVE_BOOTSTRAP_SESSION_EXISTS",
-          409,
-          "An active onboarding session already exists",
-        );
       await client.query(
         `UPDATE bootstrap_sessions SET invalidated_at=$2
           WHERE device_id=$1 AND consumed_at IS NULL AND invalidated_at IS NULL`,

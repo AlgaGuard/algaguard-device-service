@@ -566,6 +566,7 @@ export class MemoryDeviceRepository implements DeviceRepository {
     now?: Date;
   }): Promise<BootstrapSession> {
     const now = input.now ?? new Date();
+    const nowMs = now.getTime();
     if (
       !/^[0-9a-f]{64}$/.test(input.nonceHash) ||
       input.capabilityVersion !== 1 ||
@@ -588,14 +589,52 @@ export class MemoryDeviceRepository implements DeviceRepository {
       throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
     this.qrNonceHashes.add(input.nonceHash);
     try {
-      return await this.reissueBootstrapSession({
-        deviceUuid: device.deviceUuid,
-        organizationId: input.organizationId,
-        ownershipVersion: input.ownershipVersion,
-        actorSubjectId: input.actorSubjectId,
-        ttlMs: input.ttlMs,
-        now,
-      });
+      if (device.organizationId !== input.organizationId)
+        throw new DomainError(
+          "CROSS_ORGANIZATION_DENIED",
+          403,
+          "Device is not owned by this organization",
+        );
+      if (device.ownershipVersion !== input.ownershipVersion)
+        throw new DomainError(
+          "OWNERSHIP_VERSION_MISMATCH",
+          409,
+          "Device ownership changed",
+        );
+      if (device.lifecycle !== "CLAIMED")
+        throw new DomainError(
+          "QR_ONBOARDING_NOT_ALLOWED",
+          409,
+          "Device lifecycle is not eligible for onboarding",
+        );
+      for (const session of this.bootstrap.values()) {
+        if (
+          session.deviceId === device.deviceId &&
+          !session.consumedAt &&
+          !session.invalidatedAt
+        ) {
+          session.invalidatedAt = nowMs;
+        }
+      }
+      const sessionToken = randomBytes(32).toString("base64url");
+      const session: MemoryBootstrap = {
+        id: randomUUID(),
+        deviceId: device.deviceId,
+        tokenHash: secretDigest(sessionToken),
+        createdAt: nowMs,
+        expiresAt: nowMs + input.ttlMs,
+      };
+      this.bootstrap.set(session.id, session);
+      return {
+        schema: "urn:algaguard:schema:onboarding:bootstrap-session:v1",
+        schemaVersion: "1.0.0",
+        sessionId: session.id,
+        deviceId: device.deviceId,
+        createdAt: new Date(session.createdAt).toISOString(),
+        expiresAt: new Date(session.expiresAt).toISOString(),
+        serviceUuid: CANONICAL_BLE_PROVISIONING_SERVICE_UUID,
+        sessionToken,
+      };
     } catch (error) {
       this.qrNonceHashes.delete(input.nonceHash);
       throw error;
