@@ -202,6 +202,7 @@ export interface DeviceRepository {
     invitationExpiresAt: Date;
     capabilityVersion: number;
     ttlMs: number;
+    registerIfMissing?: boolean;
     now?: Date;
   }): Promise<BootstrapSession>;
   consumeBootstrap(
@@ -563,6 +564,7 @@ export class MemoryDeviceRepository implements DeviceRepository {
     invitationExpiresAt: Date;
     capabilityVersion: number;
     ttlMs: number;
+    registerIfMissing?: boolean;
     now?: Date;
   }): Promise<BootstrapSession> {
     const now = input.now ?? new Date();
@@ -584,7 +586,34 @@ export class MemoryDeviceRepository implements DeviceRepository {
         409,
         "Invitation was already used",
       );
-    const device = this.devices.get(input.deviceId);
+    let device = this.devices.get(input.deviceId);
+    let provisionalCreated = false;
+    if (!device && input.registerIfMissing) {
+      if (!/^AG-[0-9]{6}$/.test(input.deviceId))
+        throw new DomainError(
+          "QR_INVITATION_INVALID",
+          400,
+          "Invitation is invalid",
+        );
+      const timestamp = now.toISOString();
+      device = {
+        deviceUuid: randomUUID(),
+        deviceId: input.deviceId,
+        organizationId: input.organizationId,
+        hardwareModel: "ESP32-S3-DEVKITC-1-N16R8",
+        firmwareVersion: "0.0.0-development",
+        lifecycle: "CLAIMED",
+        ownershipVersion: "1",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      this.devices.set(input.deviceId, device);
+      this.nextDevice = Math.max(
+        this.nextDevice,
+        Number.parseInt(input.deviceId.slice(3), 10) + 1,
+      );
+      provisionalCreated = true;
+    }
     if (!device)
       throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
     this.qrNonceHashes.add(input.nonceHash);
@@ -637,6 +666,7 @@ export class MemoryDeviceRepository implements DeviceRepository {
       };
     } catch (error) {
       this.qrNonceHashes.delete(input.nonceHash);
+      if (provisionalCreated) this.devices.delete(input.deviceId);
       throw error;
     }
   }

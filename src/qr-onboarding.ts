@@ -164,6 +164,28 @@ export class QrOnboardingService {
     actorSubjectId: string;
     expectedOrganizationId: string;
   }) {
+    return this.exchangeBound({ ...input, registerIfMissing: false });
+  }
+
+  async exchangeScanFirst(input: {
+    invitationUri: string;
+    actorSubjectId: string;
+    expectedOrganizationId: string;
+  }) {
+    return this.exchangeBound({
+      ...input,
+      ownershipVersion: "1",
+      registerIfMissing: true,
+    });
+  }
+
+  private async exchangeBound(input: {
+    invitationUri: string;
+    ownershipVersion: string;
+    actorSubjectId: string;
+    expectedOrganizationId: string;
+    registerIfMissing: boolean;
+  }) {
     const now = this.clock();
     const invitation = decodeQrOnboardingInvitation(input.invitationUri);
     const rateKey = createHash("sha256")
@@ -196,6 +218,7 @@ export class QrOnboardingService {
       ),
       capabilityVersion: invitation.capabilityVersion,
       ttlMs: this.sessionLifetimeMs,
+      registerIfMissing: input.registerIfMissing,
       now,
     });
     return {

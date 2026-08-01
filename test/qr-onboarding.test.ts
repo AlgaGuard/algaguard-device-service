@@ -233,6 +233,111 @@ test("exchange creates no duplicate device or ownership record", async () => {
   assert.deepEqual(await value.repository.listDevices(organizationId), before);
 });
 
+test("scan-first exchange creates one provisional CLAIMED device and one session", async () => {
+  const now = new Date("2026-07-30T10:00:00.000Z");
+  const repository = new MemoryDeviceRepository();
+  const output = await service(repository, now).exchangeScanFirst({
+    invitationUri: invitation(now),
+    actorSubjectId: "owner",
+    expectedOrganizationId: organizationId,
+  });
+  const devices = await repository.listDevices(organizationId);
+  assert.equal(devices.length, 1);
+  assert.equal(devices[0]?.lifecycle, "CLAIMED");
+  assert.equal(devices[0]?.deviceId, output.deviceId);
+  assert.equal(
+    (
+      await repository.validateBootstrapSession(
+        output.sessionToken,
+        output.deviceId,
+        now,
+      )
+    ).sessionId,
+    output.sessionId,
+  );
+});
+
+test("fresh scan-first QR reuses the provisional device without duplication", async () => {
+  const now = new Date("2026-07-30T10:00:00.000Z");
+  const repository = new MemoryDeviceRepository();
+  const qr = service(repository, now);
+  await qr.exchangeScanFirst({
+    invitationUri: invitation(now, { nonceFill: 0xa5 }),
+    actorSubjectId: "owner",
+    expectedOrganizationId: organizationId,
+  });
+  await qr.exchangeScanFirst({
+    invitationUri: invitation(now, { nonceFill: 0x5a }),
+    actorSubjectId: "owner",
+    expectedOrganizationId: organizationId,
+  });
+  assert.equal((await repository.listDevices(organizationId)).length, 1);
+});
+
+test("scan-first registration rejects a second organization", async () => {
+  const now = new Date("2026-07-30T10:00:00.000Z");
+  const repository = new MemoryDeviceRepository();
+  const qr = service(repository, now);
+  await qr.exchangeScanFirst({
+    invitationUri: invitation(now, { nonceFill: 0xa5 }),
+    actorSubjectId: "owner",
+    expectedOrganizationId: organizationId,
+  });
+  await assert.rejects(
+    qr.exchangeScanFirst({
+      invitationUri: invitation(now, { nonceFill: 0x5a }),
+      actorSubjectId: "other",
+      expectedOrganizationId: "20000000-0000-4000-8000-000000000002",
+    }),
+    (error: unknown) =>
+      error instanceof DomainError &&
+      error.code === "CROSS_ORGANIZATION_DENIED",
+  );
+});
+
+test("scan-first HTTP exchange requires organization authorization and registers resource", async () => {
+  const now = new Date();
+  const repository = new MemoryDeviceRepository();
+  const authenticate: Authenticator = async () => ({
+    subjectId: "owner",
+    service: false,
+  });
+  let authorizationAction = "";
+  let resourceRegistered = false;
+  const authorize: AccessAuthorizer = {
+    async authorize(input) {
+      authorizationAction = input.action;
+      return input.organizationId === undefined;
+    },
+    async registerDevice(_deviceUuid, registeredOrganizationId) {
+      resourceRegistered = registeredOrganizationId === organizationId;
+    },
+  };
+  const response = await request(
+    buildApp({
+      repository,
+      authenticate,
+      authorize,
+      qrOnboarding: service(repository, now),
+    }),
+  )
+    .post("/v1/device-onboarding/qr/exchange")
+    .set("authorization", "Bearer redacted")
+    .send({
+      schema:
+        "urn:algaguard:schema:onboarding:qr-onboarding-exchange-request:v2",
+      schemaVersion: "2.0.0",
+      invitationUri: invitation(now),
+      organizationId,
+      registrationMode: "DEVELOPMENT_SCAN_FIRST",
+    });
+  assert.equal(response.status, 201);
+  assert.equal(response.headers["cache-control"], "no-store");
+  assert.equal(authorizationAction, "device.manage");
+  assert.equal(resourceRegistered, true);
+  assert.equal((await repository.listDevices(organizationId)).length, 1);
+});
+
 test("HTTP exchange is authenticated, authorized, no-store, and returns once", async () => {
   const now = new Date();
   const value = await owned(now);

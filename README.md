@@ -48,6 +48,23 @@ short-lived session with `Cache-Control: no-store`, and persists only its token
 hash. It never creates a claim/device/ownership row or changes lifecycle,
 organization, or ownership version.
 
+## Development-only scan-first QR registration
+
+`ALGAGUARD_ENABLE_QR_ONBOARDING` also gates the scan-first v2 exchange. While
+the service is running in development or test, an authenticated organization
+member with `device.manage` may scan a fresh physical invitation before any
+device row exists. The transaction registers that exact canonical device as a
+provisional `CLAIMED` device in the authenticated organization and creates one
+QR-bound bootstrap session; the Access Service resource mapping is then
+registered before the response is returned. A fresh invitation for the same
+device reuses the record, while another organization, replay, expiry, or an
+unsupported lifecycle fails closed.
+
+The invitation remains public proof-of-presence data, not a credential. The
+response is `no-store`, the session token is hash-only at rest, and lifecycle
+does not become `ACTIVE` until the existing credential-bootstrap path succeeds.
+This development demo path is disabled by default and rejected in production.
+
 ## Device certificates
 
 `DeviceCredentialService` accepts CSR public material only. It binds the canonical `deviceId` to the certificate CN and the immutable `deviceUuid` to exactly one SAN URI, stores the SHA-256 fingerprint plus public certificate metadata, and retains issuance, rotation, revocation, and audit history. No device private key or CA private key is accepted by an API, stored in PostgreSQL, or returned in a response.

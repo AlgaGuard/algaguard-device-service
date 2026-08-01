@@ -456,6 +456,7 @@ export class PostgresDeviceRepository implements DeviceRepository {
     invitationExpiresAt: Date;
     capabilityVersion: number;
     ttlMs: number;
+    registerIfMissing?: boolean;
     now?: Date;
   }): Promise<BootstrapSession> {
     const now = input.now ?? new Date();
@@ -477,7 +478,38 @@ export class PostgresDeviceRepository implements DeviceRepository {
         "SELECT * FROM devices WHERE device_id=$1 FOR UPDATE",
         [input.deviceId],
       );
-      const row = found.rows[0] as Record<string, unknown> | undefined;
+      let row = found.rows[0] as Record<string, unknown> | undefined;
+      if (!row && input.registerIfMissing) {
+        const inserted = await client.query(
+          `INSERT INTO devices
+             (device_uuid, device_id, organization_id, hardware_model,
+              firmware_version, lifecycle, ownership_version, created_at, updated_at)
+           VALUES ($1,$2,$3,'ESP32-S3-DEVKITC-1-N16R8',
+                   '0.0.0-development','CLAIMED',1,$4,$4)
+           RETURNING *`,
+          [randomUUID(), input.deviceId, input.organizationId, now],
+        );
+        row = inserted.rows[0] as Record<string, unknown>;
+        await client.query(
+          `SELECT setval(
+             'device_number_sequence',
+             GREATEST(
+               (SELECT last_value FROM device_number_sequence),
+               substring($1 from 4)::bigint
+             ),
+             true
+           )`,
+          [input.deviceId],
+        );
+        await client.query(
+          `INSERT INTO device_transitions
+             (device_id, from_lifecycle, to_lifecycle, actor_subject_id,
+              reason, occurred_at)
+           VALUES ($1,'UNCLAIMED','CLAIMED',$2,
+                   'QR_SCAN_FIRST_PROVISIONAL_REGISTERED',$3)`,
+          [input.deviceId, input.actorSubjectId, now],
+        );
+      }
       if (!row)
         throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
       if (String(row.organization_id) !== input.organizationId)

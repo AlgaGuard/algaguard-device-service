@@ -235,17 +235,62 @@ export function createRouter(dependencies: RouteDependencies) {
         "QR onboarding is unavailable",
       );
     const input = z
-      .object({
-        schema: z.literal(
-          "urn:algaguard:schema:onboarding:qr-onboarding-exchange-request:v1",
-        ),
-        schemaVersion: z.literal("1.0.0"),
-        invitationUri: z.string().regex(/^ag:\/\/q\/[A-Za-z0-9_-]{42}$/),
-        ownershipVersion: z.string().regex(/^[1-9][0-9]{0,18}$/),
-      })
-      .strict()
+      .union([
+        z
+          .object({
+            schema: z.literal(
+              "urn:algaguard:schema:onboarding:qr-onboarding-exchange-request:v1",
+            ),
+            schemaVersion: z.literal("1.0.0"),
+            invitationUri: z.string().regex(/^ag:\/\/q\/[A-Za-z0-9_-]{42}$/),
+            ownershipVersion: z.string().regex(/^[1-9][0-9]{0,18}$/),
+          })
+          .strict(),
+        z
+          .object({
+            schema: z.literal(
+              "urn:algaguard:schema:onboarding:qr-onboarding-exchange-request:v2",
+            ),
+            schemaVersion: z.literal("2.0.0"),
+            invitationUri: z.string().regex(/^ag:\/\/q\/[A-Za-z0-9_-]{42}$/),
+            organizationId: z.string().uuid(),
+            registrationMode: z.literal("DEVELOPMENT_SCAN_FIRST"),
+          })
+          .strict(),
+      ])
       .parse(request.body);
     const invitation = decodeQrOnboardingInvitation(input.invitationUri);
+    if (
+      input.schema ===
+      "urn:algaguard:schema:onboarding:qr-onboarding-exchange-request:v2"
+    ) {
+      const actor = await requireAccess(
+        request,
+        "device.manage",
+        "organization",
+        input.organizationId,
+      );
+      const result = await service.exchangeScanFirst({
+        invitationUri: input.invitationUri,
+        actorSubjectId: actor.subjectId,
+        expectedOrganizationId: input.organizationId,
+      });
+      const registered = await repository.getDeviceById(invitation.deviceId);
+      if (!registered)
+        throw new DomainError(
+          "QR_REGISTRATION_FAILED",
+          500,
+          "Device registration failed",
+        );
+      await authorize.registerDevice(
+        registered.deviceUuid,
+        registered.organizationId,
+        correlationId(request),
+      );
+      response.setHeader("Cache-Control", "no-store");
+      response.status(201).json(result);
+      return;
+    }
     const device = await repository.getDeviceById(invitation.deviceId);
     if (!device)
       throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
