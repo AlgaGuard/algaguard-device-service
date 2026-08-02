@@ -124,6 +124,49 @@ export function createRouter(dependencies: RouteDependencies) {
       .json(value ?? { code: "DEVICE_NOT_FOUND" });
   });
 
+  router.patch("/devices/:id", async (request, response) => {
+    const deviceUuid = z.string().uuid().parse(request.params.id);
+    const actor = await requireAccess(
+      request,
+      "device.manage",
+      "device",
+      deviceUuid,
+    );
+    const input = z
+      .object({
+        displayName: z
+          .string()
+          .trim()
+          .min(1)
+          .max(64)
+          .refine((value) => !/[\u0000-\u001f\u007f]/.test(value)),
+      })
+      .strict()
+      .parse(request.body);
+    response.json(
+      await repository.renameDevice(
+        deviceUuid,
+        input.displayName,
+        actor.subjectId,
+      ),
+    );
+  });
+
+  router.delete("/devices/:id", async (request, response) => {
+    const deviceUuid = z.string().uuid().parse(request.params.id);
+    const actor = await requireAccess(
+      request,
+      "device.manage",
+      "device",
+      deviceUuid,
+    );
+    z.object({ confirmation: z.literal("REMOVE") })
+      .strict()
+      .parse(request.body);
+    await repository.retireDevice(deviceUuid, actor.subjectId);
+    response.status(204).end();
+  });
+
   router.put("/devices/:id/tank-association", async (request, response) => {
     const deviceUuid = z.string().uuid().parse(request.params.id);
     const actor = await requireAccess(

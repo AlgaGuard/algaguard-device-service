@@ -16,6 +16,7 @@ export type DeviceLifecycle =
 export interface DeviceRecord {
   deviceUuid: string;
   deviceId: string;
+  displayName?: string;
   organizationId: string;
   tankId?: string;
   hardwareModel: string;
@@ -162,6 +163,15 @@ export interface DeviceRepository {
   listDevices(organizationId: string): Promise<DeviceRecord[]>;
   getDevice(deviceUuid: string): Promise<DeviceRecord | undefined>;
   getDeviceById(deviceId: string): Promise<DeviceRecord | undefined>;
+  renameDevice(
+    deviceUuid: string,
+    displayName: string,
+    actorSubjectId: string,
+  ): Promise<DeviceRecord>;
+  retireDevice(
+    deviceUuid: string,
+    actorSubjectId: string,
+  ): Promise<DeviceRecord>;
   assignTank(
     deviceUuid: string,
     tankId: string | undefined,
@@ -342,6 +352,36 @@ export class MemoryDeviceRepository implements DeviceRepository {
   async getDeviceById(deviceId: string) {
     const value = this.devices.get(deviceId);
     return value ? structuredClone(value) : undefined;
+  }
+
+  async renameDevice(
+    deviceUuid: string,
+    displayName: string,
+    _actorSubjectId: string,
+  ) {
+    const device = [...this.devices.values()].find(
+      (candidate) => candidate.deviceUuid === deviceUuid,
+    );
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    if (device.lifecycle === "REVOKED")
+      throw new DomainError("DEVICE_REVOKED", 410, "Device is revoked");
+    device.displayName = displayName;
+    device.updatedAt = new Date().toISOString();
+    return structuredClone(device);
+  }
+
+  async retireDevice(deviceUuid: string, _actorSubjectId: string) {
+    const device = [...this.devices.values()].find(
+      (candidate) => candidate.deviceUuid === deviceUuid,
+    );
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    if (device.lifecycle === "REVOKED") return structuredClone(device);
+    device.lifecycle = "REVOKED";
+    device.ownershipVersion = String(BigInt(device.ownershipVersion) + 1n);
+    device.updatedAt = new Date().toISOString();
+    return structuredClone(device);
   }
 
   async assignTank(

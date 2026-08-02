@@ -22,6 +22,7 @@ function device(row: Record<string, unknown>): DeviceRecord {
   return {
     deviceUuid: String(row.device_uuid),
     deviceId: String(row.device_id),
+    ...(row.display_name ? { displayName: String(row.display_name) } : {}),
     organizationId: String(row.organization_id),
     ...(row.tank_id ? { tankId: String(row.tank_id) } : {}),
     hardwareModel: String(row.hardware_model),
@@ -85,6 +86,86 @@ export class PostgresDeviceRepository implements DeviceRepository {
     return result.rows[0]
       ? device(result.rows[0] as Record<string, unknown>)
       : undefined;
+  }
+
+  async renameDevice(
+    deviceUuid: string,
+    displayName: string,
+    actorSubjectId: string,
+  ) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const updated = await client.query(
+        `UPDATE devices
+            SET display_name=$2, updated_at=now()
+          WHERE device_uuid=$1 AND lifecycle <> 'REVOKED'
+          RETURNING *`,
+        [deviceUuid, displayName],
+      );
+      if (!updated.rows[0]) {
+        const existing = await client.query(
+          "SELECT lifecycle FROM devices WHERE device_uuid=$1",
+          [deviceUuid],
+        );
+        if (!existing.rows[0])
+          throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+        throw new DomainError("DEVICE_REVOKED", 410, "Device is revoked");
+      }
+      await client.query(
+        `INSERT INTO device_transitions
+           (device_id, from_lifecycle, to_lifecycle, actor_subject_id, reason)
+         VALUES ($1, $2, $2, $3, 'DISPLAY_NAME_CHANGED')`,
+        [updated.rows[0].device_id, updated.rows[0].lifecycle, actorSubjectId],
+      );
+      await client.query("COMMIT");
+      return device(updated.rows[0] as Record<string, unknown>);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async retireDevice(deviceUuid: string, actorSubjectId: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query(
+        "SELECT * FROM devices WHERE device_uuid=$1 FOR UPDATE",
+        [deviceUuid],
+      );
+      const row = current.rows[0] as Record<string, unknown> | undefined;
+      if (!row)
+        throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+      if (row.lifecycle === "REVOKED") {
+        await client.query("COMMIT");
+        return device(row);
+      }
+      const updated = await client.query(
+        `UPDATE devices
+            SET lifecycle='REVOKED',
+                ownership_version=ownership_version+1,
+                updated_at=now()
+          WHERE device_uuid=$1
+          RETURNING *`,
+        [deviceUuid],
+      );
+      await client.query(
+        `INSERT INTO device_transitions
+           (device_id, from_lifecycle, to_lifecycle, actor_subject_id, reason)
+         VALUES ($1, $2, 'REVOKED', $3, 'OWNER_REMOVED_DEVICE')`,
+        [row.device_id, row.lifecycle, actorSubjectId],
+      );
+      await client.query("COMMIT");
+      return device(updated.rows[0] as Record<string, unknown>);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async assignTank(

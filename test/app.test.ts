@@ -176,3 +176,43 @@ test("unknown routes use problem details", async () => {
     /application\/problem\+json/,
   );
 });
+
+test("authorized managers can name and safely retire a device", async () => {
+  const instance = app();
+  const organizationId = "10000000-0000-4000-8000-000000000001";
+  const created = await request(instance)
+    .post("/v1/devices")
+    .set("authorization", "Bearer user")
+    .send({ organizationId });
+
+  const renamed = await request(instance)
+    .patch(`/v1/devices/${created.body.deviceUuid}`)
+    .set("authorization", "Bearer user")
+    .send({ displayName: "North culture tank" });
+  assert.equal(renamed.status, 200);
+  assert.equal(renamed.body.displayName, "North culture tank");
+
+  const missingConfirmation = await request(instance)
+    .delete(`/v1/devices/${created.body.deviceUuid}`)
+    .set("authorization", "Bearer user")
+    .send({ confirmation: "DELETE" });
+  assert.equal(missingConfirmation.status, 400);
+
+  const retired = await request(instance)
+    .delete(`/v1/devices/${created.body.deviceUuid}`)
+    .set("authorization", "Bearer user")
+    .send({ confirmation: "REMOVE" });
+  assert.equal(retired.status, 204);
+
+  const value = await request(instance)
+    .get(`/v1/devices/${created.body.deviceUuid}`)
+    .set("authorization", "Bearer user");
+  assert.equal(value.body.lifecycle, "REVOKED");
+  assert.equal(value.body.ownershipVersion, "2");
+
+  const renameAfterRetirement = await request(instance)
+    .patch(`/v1/devices/${created.body.deviceUuid}`)
+    .set("authorization", "Bearer user")
+    .send({ displayName: "Reused name" });
+  assert.equal(renameAfterRetirement.status, 410);
+});
