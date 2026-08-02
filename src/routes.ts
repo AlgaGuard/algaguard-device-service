@@ -107,7 +107,12 @@ export function createRouter(dependencies: RouteDependencies) {
       .uuid()
       .parse(request.query.organizationId);
     await requireAccess(request, "device.read", "organization", organizationId);
-    response.json({ items: await repository.listDevices(organizationId) });
+    const devices = await repository.listDevices(organizationId);
+    response.json({
+      items: devices.filter((device) =>
+        ["PROVISIONED", "ACTIVE", "INACTIVE"].includes(device.lifecycle),
+      ),
+    });
   });
 
   router.get("/devices/:id", async (request, response) => {

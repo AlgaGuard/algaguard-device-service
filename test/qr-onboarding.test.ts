@@ -313,14 +313,13 @@ test("scan-first HTTP exchange requires organization authorization and registers
       resourceRegistered = registeredOrganizationId === organizationId;
     },
   };
-  const response = await request(
-    buildApp({
-      repository,
-      authenticate,
-      authorize,
-      qrOnboarding: service(repository, now),
-    }),
-  )
+  const instance = buildApp({
+    repository,
+    authenticate,
+    authorize,
+    qrOnboarding: service(repository, now),
+  });
+  const response = await request(instance)
     .post("/v1/device-onboarding/qr/exchange")
     .set("authorization", "Bearer redacted")
     .send({
@@ -336,6 +335,12 @@ test("scan-first HTTP exchange requires organization authorization and registers
   assert.equal(authorizationAction, "device.manage");
   assert.equal(resourceRegistered, true);
   assert.equal((await repository.listDevices(organizationId)).length, 1);
+  const visible = await request(instance)
+    .get("/v1/devices")
+    .query({ organizationId })
+    .set("authorization", "Bearer redacted");
+  assert.equal(visible.status, 200);
+  assert.deepEqual(visible.body.items, []);
 });
 
 test("HTTP exchange is authenticated, authorized, no-store, and returns once", async () => {
