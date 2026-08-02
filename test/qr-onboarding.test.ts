@@ -134,6 +134,27 @@ test("owned CLAIMED device receives one session and a verifiable binding grant",
   assert.equal(validation.sessionId, output.sessionId);
 });
 
+test("owned provisioned device can securely reprovision without changing lifecycle", async () => {
+  const now = new Date("2026-07-30T10:00:00.000Z");
+  const value = await owned(now);
+  const internal = value.repository as unknown as {
+    devices: Map<string, { lifecycle: string }>;
+  };
+  internal.devices.get(value.device.deviceId)!.lifecycle = "ACTIVE";
+  const output = await service(value.repository, now).exchange({
+    invitationUri: invitation(now),
+    ownershipVersion: value.device.ownershipVersion,
+    actorSubjectId: "owner",
+    expectedOrganizationId: organizationId,
+  });
+  assert.equal(output.deviceId, value.device.deviceId);
+  assert.equal(
+    internal.devices.get(value.device.deviceId)?.lifecycle,
+    "ACTIVE",
+  );
+  assert.equal((await value.repository.listDevices(organizationId)).length, 1);
+});
+
 test("session is bound to nonce, device, organization, and ownership version", async () => {
   const now = new Date("2026-07-30T10:00:00.000Z");
   const value = await owned(now);

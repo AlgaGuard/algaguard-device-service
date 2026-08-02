@@ -13,6 +13,14 @@ export type DeviceLifecycle =
   | "INACTIVE"
   | "REVOKED";
 
+const QR_ONBOARDING_ELIGIBLE_LIFECYCLES: ReadonlySet<DeviceLifecycle> = new Set(
+  ["CLAIMED", "PROVISIONED", "ACTIVE", "INACTIVE"],
+);
+
+export function qrOnboardingEligibleLifecycle(lifecycle: DeviceLifecycle) {
+  return QR_ONBOARDING_ELIGIBLE_LIFECYCLES.has(lifecycle);
+}
+
 export interface DeviceRecord {
   deviceUuid: string;
   deviceId: string;
@@ -670,7 +678,7 @@ export class MemoryDeviceRepository implements DeviceRepository {
           409,
           "Device ownership changed",
         );
-      if (device.lifecycle !== "CLAIMED")
+      if (!qrOnboardingEligibleLifecycle(device.lifecycle))
         throw new DomainError(
           "QR_ONBOARDING_NOT_ALLOWED",
           409,

@@ -4,6 +4,7 @@ import {
   CANONICAL_BLE_PROVISIONING_SERVICE_UUID,
   DomainError,
   fallbackCode,
+  qrOnboardingEligibleLifecycle,
   secretDigest,
   type BootstrapSession,
   type ClaimQrPayload,
@@ -605,7 +606,8 @@ export class PostgresDeviceRepository implements DeviceRepository {
           409,
           "Device ownership changed",
         );
-      if (String(row.lifecycle) !== "CLAIMED")
+      const currentLifecycle = String(row.lifecycle) as DeviceLifecycle;
+      if (!qrOnboardingEligibleLifecycle(currentLifecycle))
         throw new DomainError(
           "QR_ONBOARDING_NOT_ALLOWED",
           409,
@@ -663,8 +665,8 @@ export class PostgresDeviceRepository implements DeviceRepository {
       await client.query(
         `INSERT INTO device_transitions
            (device_id, from_lifecycle, to_lifecycle, actor_subject_id, reason, occurred_at)
-         VALUES ($1,'CLAIMED','CLAIMED',$2,'QR_ONBOARDING_SESSION_ISSUED',$3)`,
-        [input.deviceId, input.actorSubjectId, now],
+         VALUES ($1,$2,$2,$3,'QR_ONBOARDING_SESSION_ISSUED',$4)`,
+        [input.deviceId, currentLifecycle, input.actorSubjectId, now],
       );
       await client.query("COMMIT");
       return {
