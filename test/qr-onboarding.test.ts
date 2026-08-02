@@ -393,8 +393,10 @@ test("QR onboarding is disabled by default and forbidden in production", () => {
     };
     assert.throws(() => loadConfig());
     process.env.ALGAGUARD_ENABLE_QR_ONBOARDING = "0";
+    process.env.QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8 = "";
     const config = loadConfig();
     assert.equal(config.ALGAGUARD_ENABLE_QR_ONBOARDING, "0");
+    assert.equal(config.QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8, undefined);
   } finally {
     process.env = previous;
   }

@@ -14,10 +14,13 @@ const environmentSchema = z
       .default("0"),
     ALGAGUARD_ENABLE_DEMO_TELEMETRY_SIMULATOR: z.enum(["0", "1"]).default("0"),
     ALGAGUARD_ENABLE_QR_ONBOARDING: z.enum(["0", "1"]).default("0"),
-    QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8: z
-      .string()
-      .regex(/^[A-Za-z0-9_-]{120,512}$/)
-      .optional(),
+    QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z
+        .string()
+        .regex(/^[A-Za-z0-9_-]{120,512}$/)
+        .optional(),
+    ),
     ALGAGUARD_DEVELOPMENT_ONBOARDING_WINDOW_SECONDS: z.preprocess(
       (value) => (value === "" ? undefined : value),
       z.coerce.number().int().min(600).max(1800).optional(),
