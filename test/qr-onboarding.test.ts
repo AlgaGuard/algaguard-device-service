@@ -316,6 +316,41 @@ test("scan-first registration rejects a second organization", async () => {
   );
 });
 
+test("a physically unpaired record is rebound by one fresh scan without duplicating identity", async () => {
+  const now = new Date("2026-07-30T10:00:00.000Z");
+  const value = await owned(now);
+  // confirmPhysicalUnpair only allows PROVISIONED/ACTIVE/INACTIVE devices;
+  // owned() leaves the device CLAIMED with an invalidated bootstrap session,
+  // so move it straight to ACTIVE the same way owned() reaches into the
+  // in-memory store for its own bootstrap-invalidation setup.
+  const internalDevices = value.repository as unknown as {
+    devices: Map<string, { lifecycle: string }>;
+  };
+  internalDevices.devices.get(value.device.deviceId)!.lifecycle = "ACTIVE";
+  const unpaired = await value.repository.confirmPhysicalUnpair({
+    deviceUuid: value.device.deviceUuid,
+    organizationId,
+    ownershipVersion: value.device.ownershipVersion,
+    actorSubjectId: "owner",
+    commandId: "30000000-0000-4000-8000-000000000003",
+  });
+  assert.equal(unpaired.device.lifecycle, "UNCLAIMED");
+  const nextOrganization = "20000000-0000-4000-8000-000000000002";
+  const session = await service(value.repository, now).exchangeScanFirst({
+    invitationUri: invitation(now, { nonceFill: 0x4c }),
+    actorSubjectId: "new-owner",
+    expectedOrganizationId: nextOrganization,
+  });
+  const rebound = await value.repository.getDeviceById(session.deviceId);
+  assert.equal(rebound?.deviceUuid, value.device.deviceUuid);
+  assert.equal(rebound?.organizationId, nextOrganization);
+  assert.equal(rebound?.lifecycle, "CLAIMED");
+  assert.equal(
+    (await value.repository.listDevices(nextOrganization)).length,
+    1,
+  );
+});
+
 test("scan-first HTTP exchange requires organization authorization and registers resource", async () => {
   const now = new Date();
   const repository = new MemoryDeviceRepository();

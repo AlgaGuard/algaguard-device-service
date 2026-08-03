@@ -221,6 +221,16 @@ export class QrOnboardingService {
       registerIfMissing: input.registerIfMissing,
       now,
     });
+    const boundDevice = await this.repository.getDeviceById(session.deviceId);
+    if (
+      !boundDevice ||
+      boundDevice.organizationId !== input.expectedOrganizationId
+    )
+      throw new DomainError(
+        "QR_ONBOARDING_BINDING_FAILED",
+        409,
+        "Onboarding binding could not be verified",
+      );
     return {
       schema:
         "urn:algaguard:schema:onboarding:qr-onboarding-exchange-response:v1" as const,
@@ -234,7 +244,7 @@ export class QrOnboardingService {
       bindingGrant: this.signer.createGrant(
         session,
         invitation,
-        input.ownershipVersion,
+        boundDevice.ownershipVersion,
       ),
     };
   }

@@ -29,6 +29,8 @@ const environmentSchema = z
     KEYCLOAK_TOKEN_URL: z.string().url().optional(),
     SERVICE_CLIENT_ID: z.string().min(1).optional(),
     SERVICE_CLIENT_SECRET: z.string().min(1).optional(),
+    COMMAND_SERVICE_URL: z.string().url().optional(),
+    REALTIME_SERVICE_URL: z.string().url().optional(),
     PHYSICAL_SESSION_HANDOFF_WRAPPING_KEY: z.string().min(1).optional(),
     HTTP_BODY_LIMIT: z
       .string()

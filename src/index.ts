@@ -23,6 +23,10 @@ import {
   QrOnboardingGrantSigner,
   QrOnboardingService,
 } from "./qr-onboarding.js";
+import {
+  HttpPhysicalUnpairCommandVerifier,
+  HttpPhysicalUnpairNotifier,
+} from "./physical-unpair.js";
 
 const config = loadConfig();
 const onboardingWindowMs = developmentOnboardingWindowMs(
@@ -107,6 +111,20 @@ const server = buildApp({
     : {}),
   ...(physicalSessionHandoff ? { physicalSessionHandoff } : {}),
   ...(qrOnboarding ? { qrOnboarding } : {}),
+  ...(config.COMMAND_SERVICE_URL
+    ? {
+        physicalUnpairVerifier: new HttpPhysicalUnpairCommandVerifier(
+          config.COMMAND_SERVICE_URL,
+        ),
+      }
+    : {}),
+  ...(config.REALTIME_SERVICE_URL
+    ? {
+        physicalUnpairNotifier: new HttpPhysicalUnpairNotifier(
+          config.REALTIME_SERVICE_URL,
+        ),
+      }
+    : {}),
   ownedDeviceBootstrapReissueEnabled:
     config.ALGAGUARD_ENABLE_OWNED_DEVICE_BOOTSTRAP_REISSUE === "1",
   developmentOnboardingWindowMs: onboardingWindowMs,

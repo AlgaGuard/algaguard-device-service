@@ -20,6 +20,10 @@ import {
   decodeQrOnboardingInvitation,
   QrOnboardingService,
 } from "./qr-onboarding.js";
+import type {
+  PhysicalUnpairCommandVerifier,
+  PhysicalUnpairNotifier,
+} from "./physical-unpair.js";
 
 export interface RouteDependencies {
   repository: DeviceRepository;
@@ -32,6 +36,8 @@ export interface RouteDependencies {
   ownedDeviceBootstrapReissueEnabled?: boolean;
   developmentOnboardingWindowMs?: number;
   qrOnboarding?: QrOnboardingService;
+  physicalUnpairVerifier?: PhysicalUnpairCommandVerifier;
+  physicalUnpairNotifier?: PhysicalUnpairNotifier;
   httpBodyLimit?: string;
 }
 
@@ -108,11 +114,16 @@ export function createRouter(dependencies: RouteDependencies) {
       .parse(request.query.organizationId);
     await requireAccess(request, "device.read", "organization", organizationId);
     const devices = await repository.listDevices(organizationId);
-    response.json({
-      items: devices.filter((device) =>
-        ["PROVISIONED", "ACTIVE", "INACTIVE"].includes(device.lifecycle),
-      ),
-    });
+    const visible = devices.filter((device) =>
+      ["PROVISIONED", "ACTIVE", "INACTIVE"].includes(device.lifecycle),
+    );
+    const items = await Promise.all(
+      visible.map(async (device) => ({
+        ...device,
+        status: (await repository.latestStatus(device.deviceId)) ?? null,
+      })),
+    );
+    response.json({ items });
   });
 
   router.get("/devices/:id", async (request, response) => {
@@ -160,12 +171,91 @@ export function createRouter(dependencies: RouteDependencies) {
       "device",
       deviceUuid,
     );
+    void actor;
     z.object({ confirmation: z.literal("REMOVE") })
       .strict()
       .parse(request.body);
-    await repository.retireDevice(deviceUuid, actor.subjectId);
-    response.status(204).end();
+    throw new DomainError(
+      "PHYSICAL_UNPAIR_REQUIRED",
+      409,
+      "Confirm unpair on the physical device",
+    );
   });
+
+  router.post(
+    "/devices/:id/physical-unpair/finalize",
+    async (request, response) => {
+      const verifier = dependencies.physicalUnpairVerifier;
+      if (!verifier)
+        throw new DomainError(
+          "PHYSICAL_UNPAIR_UNAVAILABLE",
+          503,
+          "Physical unpair is unavailable",
+        );
+      const deviceUuid = z.string().uuid().parse(request.params.id);
+      const device = await repository.getDevice(deviceUuid);
+      if (!device)
+        throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+      const actor = await requireAccess(
+        request,
+        "device.manage",
+        "device",
+        deviceUuid,
+        device.organizationId,
+      );
+      const input = z
+        .object({
+          commandId: z.string().uuid(),
+          ownershipVersion: z.string().regex(/^[1-9][0-9]{0,18}$/),
+          confirmation: z.literal("PHYSICALLY_CONFIRMED"),
+        })
+        .strict()
+        .parse(request.body);
+      const authorization = request.header("authorization");
+      if (!authorization)
+        throw new DomainError(
+          "UNAUTHENTICATED",
+          401,
+          "Authentication is required",
+        );
+      await verifier.verify({
+        commandId: input.commandId,
+        deviceId: device.deviceId,
+        organizationId: device.organizationId,
+        authorization,
+      });
+      const lifecycle = dependencies.credentialLifecycle;
+      if (lifecycle) {
+        const credentials = await lifecycle.listCredentials(deviceUuid);
+        for (const credential of credentials)
+          if (["ACTIVE", "ROTATING"].includes(credential.status))
+            await lifecycle.revoke({
+              deviceUuid,
+              credentialId: credential.credentialId,
+              reason: "ADMIN_REVOKED",
+              actorId: actor.subjectId,
+            });
+      }
+      const result = await repository.confirmPhysicalUnpair({
+        deviceUuid,
+        organizationId: device.organizationId,
+        ownershipVersion: input.ownershipVersion,
+        actorSubjectId: actor.subjectId,
+        commandId: input.commandId,
+      });
+      if (dependencies.physicalUnpairNotifier)
+        await dependencies.physicalUnpairNotifier.notify({
+          organizationId: result.previousOrganizationId,
+          commandId: input.commandId,
+        });
+      response.json({
+        state: "UNPAIRED",
+        lifecycle: result.device.lifecycle,
+        ownershipVersion: result.device.ownershipVersion,
+        credentialsRevoked: lifecycle !== undefined,
+      });
+    },
+  );
 
   router.put("/devices/:id/tank-association", async (request, response) => {
     const deviceUuid = z.string().uuid().parse(request.params.id);

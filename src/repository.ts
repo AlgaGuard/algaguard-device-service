@@ -257,6 +257,73 @@ export class PostgresDeviceRepository implements DeviceRepository {
     }
   }
 
+  async confirmPhysicalUnpair(input: {
+    deviceUuid: string;
+    organizationId: string;
+    ownershipVersion: string;
+    actorSubjectId: string;
+    commandId: string;
+  }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query(
+        "SELECT * FROM devices WHERE device_uuid=$1 FOR UPDATE",
+        [input.deviceUuid],
+      );
+      const row = current.rows[0] as Record<string, unknown> | undefined;
+      if (!row)
+        throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+      if (String(row.organization_id) !== input.organizationId)
+        throw new DomainError(
+          "CROSS_ORGANIZATION_DENIED",
+          403,
+          "Device ownership changed",
+        );
+      if (String(row.ownership_version) !== input.ownershipVersion)
+        throw new DomainError(
+          "OWNERSHIP_VERSION_MISMATCH",
+          409,
+          "Device ownership changed",
+        );
+      if (
+        !["PROVISIONED", "ACTIVE", "INACTIVE"].includes(String(row.lifecycle))
+      )
+        throw new DomainError(
+          "UNPAIR_NOT_ALLOWED",
+          409,
+          "Device cannot be unpaired",
+        );
+      const updated = await client.query(
+        `UPDATE devices SET lifecycle='UNCLAIMED', ownership_version=ownership_version+1,
+            display_name=NULL, tank_id=NULL, updated_at=now()
+          WHERE device_uuid=$1 RETURNING *`,
+        [input.deviceUuid],
+      );
+      await client.query(
+        `INSERT INTO device_transitions
+          (device_id, from_lifecycle, to_lifecycle, actor_subject_id, reason)
+         VALUES($1,$2,'UNCLAIMED',$3,$4)`,
+        [
+          row.device_id,
+          row.lifecycle,
+          input.actorSubjectId,
+          `PHYSICAL_UNPAIR:${input.commandId}`,
+        ],
+      );
+      await client.query("COMMIT");
+      return {
+        device: device(updated.rows[0] as Record<string, unknown>),
+        previousOrganizationId: input.organizationId,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async createClaim(
     deviceId: string,
     ttlMs: number,
@@ -594,13 +661,37 @@ export class PostgresDeviceRepository implements DeviceRepository {
       }
       if (!row)
         throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+      if (String(row.lifecycle) === "UNCLAIMED" && input.registerIfMissing) {
+        const rebound = await client.query(
+          `UPDATE devices
+              SET organization_id=$2,
+                  lifecycle='CLAIMED',
+                  ownership_version=ownership_version+1,
+                  updated_at=$3
+            WHERE device_id=$1 AND lifecycle='UNCLAIMED'
+            RETURNING *`,
+          [input.deviceId, input.organizationId, now],
+        );
+        row = rebound.rows[0] as Record<string, unknown>;
+        await client.query(
+          `INSERT INTO device_transitions
+             (device_id, from_lifecycle, to_lifecycle, actor_subject_id,
+              reason, occurred_at)
+           VALUES ($1,'UNCLAIMED','CLAIMED',$2,
+                   'QR_SCAN_FIRST_REBOUND',$3)`,
+          [input.deviceId, input.actorSubjectId, now],
+        );
+      }
       if (String(row.organization_id) !== input.organizationId)
         throw new DomainError(
           "CROSS_ORGANIZATION_DENIED",
           403,
           "Device is not owned by this organization",
         );
-      if (String(row.ownership_version) !== input.ownershipVersion)
+      if (
+        !input.registerIfMissing &&
+        String(row.ownership_version) !== input.ownershipVersion
+      )
         throw new DomainError(
           "OWNERSHIP_VERSION_MISMATCH",
           409,
@@ -653,7 +744,7 @@ export class PostgresDeviceRepository implements DeviceRepository {
           input.nonceHash,
           input.deviceId,
           input.organizationId,
-          input.ownershipVersion,
+          String(row.ownership_version),
           sessionId,
           input.capabilityVersion,
           input.invitationIssuedAt,

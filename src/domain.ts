@@ -53,6 +53,11 @@ export interface OwnershipTransfer {
   previousOrganizationId: string;
 }
 
+export interface PhysicalUnpairResult {
+  device: DeviceRecord;
+  previousOrganizationId: string;
+}
+
 export interface ClaimQrPayload {
   v: 1;
   d: string;
@@ -190,6 +195,13 @@ export interface DeviceRepository {
     organizationId: string,
     actorSubjectId: string,
   ): Promise<OwnershipTransfer>;
+  confirmPhysicalUnpair(input: {
+    deviceUuid: string;
+    organizationId: string;
+    ownershipVersion: string;
+    actorSubjectId: string;
+    commandId: string;
+  }): Promise<PhysicalUnpairResult>;
   createClaim(
     deviceId: string,
     ttlMs: number,
@@ -431,6 +443,45 @@ export class MemoryDeviceRepository implements DeviceRepository {
     return { device: structuredClone(device), previousOrganizationId };
   }
 
+  async confirmPhysicalUnpair(input: {
+    deviceUuid: string;
+    organizationId: string;
+    ownershipVersion: string;
+    actorSubjectId: string;
+    commandId: string;
+  }): Promise<PhysicalUnpairResult> {
+    const device = [...this.devices.values()].find(
+      (candidate) => candidate.deviceUuid === input.deviceUuid,
+    );
+    if (!device)
+      throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    if (device.organizationId !== input.organizationId)
+      throw new DomainError(
+        "CROSS_ORGANIZATION_DENIED",
+        403,
+        "Device ownership changed",
+      );
+    if (device.ownershipVersion !== input.ownershipVersion)
+      throw new DomainError(
+        "OWNERSHIP_VERSION_MISMATCH",
+        409,
+        "Device ownership changed",
+      );
+    if (!["PROVISIONED", "ACTIVE", "INACTIVE"].includes(device.lifecycle))
+      throw new DomainError(
+        "UNPAIR_NOT_ALLOWED",
+        409,
+        "Device cannot be unpaired",
+      );
+    const previousOrganizationId = device.organizationId;
+    device.lifecycle = "UNCLAIMED";
+    device.ownershipVersion = (BigInt(device.ownershipVersion) + 1n).toString();
+    delete device.displayName;
+    delete device.tankId;
+    device.updatedAt = new Date().toISOString();
+    return { device: structuredClone(device), previousOrganizationId };
+  }
+
   async createClaim(deviceId: string, ttlMs: number, _actorSubjectId: string) {
     const device = this.devices.get(deviceId);
     if (!device)
@@ -664,6 +715,14 @@ export class MemoryDeviceRepository implements DeviceRepository {
     }
     if (!device)
       throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
+    if (device.lifecycle === "UNCLAIMED" && input.registerIfMissing) {
+      device.organizationId = input.organizationId;
+      device.ownershipVersion = (
+        BigInt(device.ownershipVersion) + 1n
+      ).toString();
+      device.lifecycle = "CLAIMED";
+      device.updatedAt = now.toISOString();
+    }
     this.qrNonceHashes.add(input.nonceHash);
     try {
       if (device.organizationId !== input.organizationId)
@@ -672,7 +731,10 @@ export class MemoryDeviceRepository implements DeviceRepository {
           403,
           "Device is not owned by this organization",
         );
-      if (device.ownershipVersion !== input.ownershipVersion)
+      if (
+        !input.registerIfMissing &&
+        device.ownershipVersion !== input.ownershipVersion
+      )
         throw new DomainError(
           "OWNERSHIP_VERSION_MISMATCH",
           409,

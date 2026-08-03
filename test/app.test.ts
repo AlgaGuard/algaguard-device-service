@@ -20,9 +20,9 @@ const authorize: AccessAuthorizer = {
   async registerDevice() {},
 };
 
-function app() {
+function app(repository = new MemoryDeviceRepository()) {
   return buildApp({
-    repository: new MemoryDeviceRepository(),
+    repository,
     authenticate,
     authorize,
     credentials: new DevelopmentCredentialProvider(true),
@@ -37,6 +37,61 @@ test("liveness, readiness, and correlation middleware are available", async () =
   assert.equal(live.status, 200);
   assert.equal(live.headers["x-correlation-id"], "test-correlation");
   assert.equal((await request(instance).get("/health/ready")).status, 200);
+});
+
+test("only a successful physical command can finalize unpair and notify the former organization", async () => {
+  const repository = new MemoryDeviceRepository();
+  const organizationId = "10000000-0000-4000-8000-000000000001";
+  const notified: Array<{ organizationId: string; commandId: string }> = [];
+  const instance = buildApp({
+    repository,
+    authenticate,
+    authorize,
+    credentials: new DevelopmentCredentialProvider(true),
+    physicalUnpairVerifier: {
+      async verify(input) {
+        assert.equal(input.organizationId, organizationId);
+        return { ...input, physicallyConfirmed: true };
+      },
+    },
+    physicalUnpairNotifier: {
+      async notify(input) {
+        notified.push(input);
+      },
+    },
+  });
+  const created = await request(instance)
+    .post("/v1/devices")
+    .set("authorization", "Bearer user")
+    .send({ organizationId });
+  const device = created.body as { deviceUuid: string; deviceId: string };
+  const qr = await request(instance)
+    .post(`/v1/devices/${device.deviceUuid}/setup`)
+    .set("authorization", "Bearer user")
+    .send({ expiresInSeconds: 600 });
+  const claimed = await request(instance)
+    .post("/v1/claims/consume")
+    .set("authorization", "Bearer user")
+    .send({ organizationId, qr: qr.body });
+  await request(instance)
+    .post(`/v1/devices/${device.deviceId}/bootstrap`)
+    .send({ sessionToken: claimed.body.bootstrap.sessionToken });
+  const commandId = "20000000-0000-4000-8000-000000000002";
+  const result = await request(instance)
+    .post(`/v1/devices/${device.deviceUuid}/physical-unpair/finalize`)
+    .set("authorization", "Bearer user")
+    .send({
+      commandId,
+      ownershipVersion: "1",
+      confirmation: "PHYSICALLY_CONFIRMED",
+    });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.state, "UNPAIRED");
+  assert.equal(
+    (await repository.getDevice(device.deviceUuid))?.lifecycle,
+    "UNCLAIMED",
+  );
+  assert.deepEqual(notified, [{ organizationId, commandId }]);
 });
 
 test("authorized QR claim and bootstrap flow uses the versioned contracts", async () => {
@@ -177,7 +232,7 @@ test("unknown routes use problem details", async () => {
   );
 });
 
-test("authorized managers can name and safely retire a device", async () => {
+test("authorized managers can name a device but direct deletion requires physical unpair", async () => {
   const instance = app();
   const organizationId = "10000000-0000-4000-8000-000000000001";
   const created = await request(instance)
@@ -198,21 +253,21 @@ test("authorized managers can name and safely retire a device", async () => {
     .send({ confirmation: "DELETE" });
   assert.equal(missingConfirmation.status, 400);
 
-  const retired = await request(instance)
+  const directRemoval = await request(instance)
     .delete(`/v1/devices/${created.body.deviceUuid}`)
     .set("authorization", "Bearer user")
     .send({ confirmation: "REMOVE" });
-  assert.equal(retired.status, 204);
+  assert.equal(directRemoval.status, 409);
 
   const value = await request(instance)
     .get(`/v1/devices/${created.body.deviceUuid}`)
     .set("authorization", "Bearer user");
-  assert.equal(value.body.lifecycle, "REVOKED");
-  assert.equal(value.body.ownershipVersion, "2");
+  assert.equal(value.body.lifecycle, "UNCLAIMED");
+  assert.equal(value.body.ownershipVersion, "1");
 
-  const renameAfterRetirement = await request(instance)
+  const renameAfterRejectedRemoval = await request(instance)
     .patch(`/v1/devices/${created.body.deviceUuid}`)
     .set("authorization", "Bearer user")
     .send({ displayName: "Reused name" });
-  assert.equal(renameAfterRetirement.status, 410);
+  assert.equal(renameAfterRejectedRemoval.status, 200);
 });
