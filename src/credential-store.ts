@@ -848,7 +848,7 @@ export class PostgresCredentialStore implements CredentialStore {
       await client.query("BEGIN");
       const active = await client.query(
         `SELECT 1 FROM device_credentials
-          WHERE device_uuid=$1 AND purpose='INITIAL' AND status IN ('PENDING','ACTIVE','ROTATING')
+          WHERE device_uuid=$1 AND purpose='INITIAL' AND status IN ('ACTIVE','ROTATING')
           LIMIT 1 FOR UPDATE`,
         [input.deviceUuid],
       );
@@ -858,6 +858,44 @@ export class PostgresCredentialStore implements CredentialStore {
           409,
           "Device already has an initial credential",
         );
+      // A PENDING credential means issuance started but never reached
+      // ACTIVE. If that happened recently, the device may genuinely still
+      // be mid-flight (slow network, retrying its own CSR submission) --
+      // don't race it. But with no time bound at all here, a device that
+      // never completes onboarding (e.g. it received Wi-Fi credentials but
+      // can't reach the cloud to finish credential issuance) would leave
+      // this PENDING forever, permanently blocking every future retry for
+      // that device with no recovery path short of manual DB surgery. Use
+      // the same bootstrapTtlMs window the bootstrap token itself is
+      // bound by: if that much time has passed, the token this credential
+      // was created under is long expired, so nothing can still be using
+      // it -- treat it as abandoned and let the retry through.
+      const pending = await client.query(
+        `SELECT credential_id, created_at FROM device_credentials
+          WHERE device_uuid=$1 AND purpose='INITIAL' AND status='PENDING'
+          LIMIT 1 FOR UPDATE`,
+        [input.deviceUuid],
+      );
+      const pendingRow = pending.rows[0] as
+        | { credential_id: string; created_at: Date }
+        | undefined;
+      if (pendingRow) {
+        const stale =
+          input.now.getTime() - new Date(pendingRow.created_at).getTime() >
+          input.ttlMs;
+        if (!stale)
+          throw new DomainError(
+            "INITIAL_CREDENTIAL_EXISTS",
+            409,
+            "Device already has an initial credential",
+          );
+        await client.query(
+          `UPDATE device_credentials
+              SET status='FAILED', revocation_reason='ISSUANCE_ERROR', updated_at=$2
+            WHERE credential_id=$1`,
+          [pendingRow.credential_id, input.now],
+        );
+      }
       await client.query(
         `UPDATE credential_bootstrap_sessions SET invalidated_at=$2
           WHERE device_uuid=$1 AND consumed_at IS NULL AND invalidated_at IS NULL`,

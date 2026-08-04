@@ -159,6 +159,18 @@ export class PostgresDeviceRepository implements DeviceRepository {
          VALUES ($1, $2, 'REVOKED', $3, 'OWNER_REMOVED_DEVICE')`,
         [row.device_id, row.lifecycle, actorSubjectId],
       );
+      // A retired device's credentials must not outlive it: leaving a
+      // PENDING/ACTIVE/ROTATING row behind permanently blocks re-onboarding
+      // the same physical device, since createBootstrap() refuses to issue
+      // a new INITIAL credential while one is still in a non-terminal
+      // status (see the "device already has an initial credential" 409).
+      await client.query(
+        `UPDATE device_credentials
+            SET status='REVOKED', revocation_reason='DEVICE_RETIRED',
+                revoked_at=now(), updated_at=now()
+          WHERE device_uuid=$1 AND status IN ('PENDING','ACTIVE','ROTATING')`,
+        [deviceUuid],
+      );
       await client.query("COMMIT");
       return device(updated.rows[0] as Record<string, unknown>);
     } catch (error) {
