@@ -877,8 +877,7 @@ export class PostgresCredentialStore implements CredentialStore {
         [input.deviceUuid],
       );
       const pendingRow = pending.rows[0] as
-        | { credential_id: string; created_at: Date }
-        | undefined;
+        { credential_id: string; created_at: Date } | undefined;
       if (pendingRow) {
         const stale =
           input.now.getTime() - new Date(pendingRow.created_at).getTime() >
