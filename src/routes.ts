@@ -722,6 +722,17 @@ export function createRouter(dependencies: RouteDependencies) {
         status: z.record(z.string(), z.unknown()),
       })
       .parse(request.body);
+    // The EMQX rule that calls this fires on every client connect/disconnect
+    // across both the device and internal listeners -- there's no reliable
+    // way to filter it to devices only in EMQX's rule SQL (every function
+    // tried failed against a live 5.8 instance; see base.hocon). A service
+    // clientid like "algaguard-command-service" would otherwise reach
+    // updateStatus() and fail its device_id foreign key, 500ing on every
+    // single service connect/disconnect. No-op instead of erroring.
+    if (!/^AG-[0-9]{6}$/.test(request.params.id)) {
+      response.status(204).end();
+      return;
+    }
     await repository.updateStatus(
       request.params.id,
       input.status,

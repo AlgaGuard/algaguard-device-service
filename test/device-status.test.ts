@@ -73,6 +73,28 @@ test("a device with no status update at all is reported offline, not crashing", 
   assert.equal(fetched.body.status, null);
 });
 
+test("a status update for a non-device clientid (e.g. an internal service) no-ops instead of erroring", async () => {
+  // MemoryDeviceRepository has no foreign key on device_id the way Postgres
+  // does, so it wouldn't itself reject an unknown id -- assert the route
+  // never even calls updateStatus() for a non-AG-XXXXXX id, which is the
+  // actual guard this test needs to prove exists.
+  let updateStatusCalled = false;
+  const repository = new MemoryDeviceRepository();
+  const spyRepository = Object.create(repository) as MemoryDeviceRepository;
+  spyRepository.updateStatus = async (...args) => {
+    updateStatusCalled = true;
+    return repository.updateStatus(...args);
+  };
+  const instance = app(spyRepository);
+
+  const serviceClientUpdate = await request(instance)
+    .put("/v1/internal/devices/algaguard-command-service/status")
+    .set("authorization", "Bearer broker-secret")
+    .send({ observedAt: new Date().toISOString(), status: { online: true } });
+  assert.equal(serviceClientUpdate.status, 204);
+  assert.equal(updateStatusCalled, false);
+});
+
 test("an invalid broker token falls back to the OIDC service-token check rather than being silently trusted", async () => {
   const instance = app();
   const device = await createDevice(instance);
