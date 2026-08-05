@@ -922,8 +922,12 @@ export class MemoryDeviceRepository implements DeviceRepository {
     status: Record<string, unknown>,
     observedAt: Date,
   ) {
+    // Shape must mirror PostgresDeviceRepository.latestStatus(), which
+    // returns the stored column ("status") nested alongside "observedAt" --
+    // not the status fields spread flat -- so callers see the same
+    // structure against this fake as they do against the real repository.
     this.statuses.set(deviceId, {
-      ...structuredClone(status),
+      status: structuredClone(status),
       observedAt: observedAt.toISOString(),
     });
   }
@@ -933,7 +937,7 @@ export class MemoryDeviceRepository implements DeviceRepository {
     observedAt: Date,
   ) {
     this.healthValues.set(deviceId, {
-      ...structuredClone(health),
+      health: structuredClone(health),
       observedAt: observedAt.toISOString(),
     });
   }

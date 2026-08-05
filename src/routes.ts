@@ -118,10 +118,17 @@ export function createRouter(dependencies: RouteDependencies) {
       ["PROVISIONED", "ACTIVE", "INACTIVE"].includes(device.lifecycle),
     );
     const items = await Promise.all(
-      visible.map(async (device) => ({
-        ...device,
-        status: (await repository.latestStatus(device.deviceId)) ?? null,
-      })),
+      visible.map(async (device) => {
+        const latest = await repository.latestStatus(device.deviceId);
+        const statusValue = latest?.status as
+          Record<string, unknown> | undefined;
+        return {
+          ...device,
+          status: statusValue ?? null,
+          online: statusValue?.online === true,
+          statusObservedAt: latest?.observedAt ?? null,
+        };
+      }),
     );
     response.json({ items });
   });
@@ -130,9 +137,18 @@ export function createRouter(dependencies: RouteDependencies) {
     const deviceUuid = z.string().uuid().parse(request.params.id);
     await requireAccess(request, "device.read", "device", deviceUuid);
     const value = await repository.getDevice(deviceUuid);
-    response
-      .status(value ? 200 : 404)
-      .json(value ?? { code: "DEVICE_NOT_FOUND" });
+    if (!value) {
+      response.status(404).json({ code: "DEVICE_NOT_FOUND" });
+      return;
+    }
+    const latest = await repository.latestStatus(value.deviceId);
+    const statusValue = latest?.status as Record<string, unknown> | undefined;
+    response.status(200).json({
+      ...value,
+      status: statusValue ?? null,
+      online: statusValue?.online === true,
+      statusObservedAt: latest?.observedAt ?? null,
+    });
   });
 
   router.patch("/devices/:id", async (request, response) => {
@@ -678,16 +694,31 @@ export function createRouter(dependencies: RouteDependencies) {
   );
 
   router.put("/internal/devices/:id/status", async (request, response) => {
-    const actor = await authenticate(request.header("authorization"));
-    if (!actor.service)
-      throw new DomainError(
-        "SERVICE_TOKEN_REQUIRED",
-        403,
-        "Service token required",
-      );
+    const authorization = request.header("authorization");
+    let authorizedByBroker = false;
+    if (dependencies.authenticateBroker) {
+      try {
+        dependencies.authenticateBroker(authorization);
+        authorizedByBroker = true;
+      } catch {
+        // Not a broker call (or a bad broker token) -- fall through to the
+        // OIDC service-token check below rather than rejecting outright.
+      }
+    }
+    if (!authorizedByBroker) {
+      const actor = await authenticate(authorization);
+      if (!actor.service)
+        throw new DomainError(
+          "SERVICE_TOKEN_REQUIRED",
+          403,
+          "Service token required",
+        );
+    }
     const input = z
       .object({
-        observedAt: z.string().datetime(),
+        // EMQX's rule-engine now_rfc3339() emits the "+00:00" offset form,
+        // not the "Z" shorthand -- both are valid RFC 3339, so accept both.
+        observedAt: z.string().datetime({ offset: true }),
         status: z.record(z.string(), z.unknown()),
       })
       .parse(request.body);
