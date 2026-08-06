@@ -65,7 +65,7 @@ export class HttpPhysicalUnpairNotifier implements PhysicalUnpairNotifier {
 
   async notify(input: { organizationId: string; commandId: string }) {
     const response = await fetch(
-      `${this.baseUrl}/internal/notifications/device-unpaired`,
+      `${this.baseUrl}/v1/internal/notifications/device-unpaired`,
       {
         method: "POST",
         headers: {
@@ -104,7 +104,7 @@ export class HttpPhysicalUnpairCommandVerifier implements PhysicalUnpairCommandV
     authorization: string;
   }) {
     const response = await fetch(
-      `${this.baseUrl}/commands/${input.commandId}`,
+      `${this.baseUrl}/v1/commands/${input.commandId}`,
       {
         headers: { authorization: input.authorization },
         redirect: "error",
