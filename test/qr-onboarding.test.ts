@@ -295,6 +295,39 @@ test("fresh scan-first QR reuses the provisional device without duplication", as
   assert.equal((await repository.listDevices(organizationId)).length, 1);
 });
 
+test("scan-first exchange claims several distinct devices into one organization", async () => {
+  // A customer receiving multiple physical tanks scans each one's QR in
+  // turn; nothing about onboarding should cap how many devices one
+  // organization can own.
+  const now = new Date("2026-07-30T10:00:00.000Z");
+  const repository = new MemoryDeviceRepository();
+  const qr = service(repository, now);
+  const first = await qr.exchangeScanFirst({
+    invitationUri: invitation(now, { device: 1, nonceFill: 0xa5 }),
+    actorSubjectId: "owner",
+    expectedOrganizationId: organizationId,
+  });
+  const second = await qr.exchangeScanFirst({
+    invitationUri: invitation(now, { device: 2, nonceFill: 0x5a }),
+    actorSubjectId: "owner",
+    expectedOrganizationId: organizationId,
+  });
+  const third = await qr.exchangeScanFirst({
+    invitationUri: invitation(now, { device: 3, nonceFill: 0x4c }),
+    actorSubjectId: "owner",
+    expectedOrganizationId: organizationId,
+  });
+  const devices = await repository.listDevices(organizationId);
+  assert.equal(devices.length, 3);
+  const deviceIds = devices.map((device) => device.deviceId).sort();
+  assert.deepEqual(
+    deviceIds,
+    [first.deviceId, second.deviceId, third.deviceId].sort(),
+  );
+  assert.equal(new Set(deviceIds).size, 3);
+  for (const device of devices) assert.equal(device.lifecycle, "CLAIMED");
+});
+
 test("scan-first registration rejects a second organization", async () => {
   const now = new Date("2026-07-30T10:00:00.000Z");
   const repository = new MemoryDeviceRepository();
