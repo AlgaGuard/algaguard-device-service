@@ -48,22 +48,28 @@ short-lived session with `Cache-Control: no-store`, and persists only its token
 hash. It never creates a claim/device/ownership row or changes lifecycle,
 organization, or ownership version.
 
-## Development-only scan-first QR registration
+## Scan-first QR registration
 
-`ALGAGUARD_ENABLE_QR_ONBOARDING` also gates the scan-first v2 exchange. While
-the service is running in development or test, an authenticated organization
-member with `device.manage` may scan a fresh physical invitation before any
-device row exists. The transaction registers that exact canonical device as a
-provisional `CLAIMED` device in the authenticated organization and creates one
-QR-bound bootstrap session; the Access Service resource mapping is then
-registered before the response is returned. A fresh invitation for the same
-device reuses the record, while another organization, replay, expiry, or an
-unsupported lifecycle fails closed.
+`ALGAGUARD_ENABLE_QR_ONBOARDING` gates the scan-first v2 exchange. This is the
+product's real customer-facing device-onboarding flow -- unlike the
+development-only flags above, it is permitted in every `NODE_ENV`, including
+production, so a customer can pair their own hardware by scanning each
+device's QR code. An authenticated organization member with `device.manage`
+may scan a fresh physical invitation before any device row exists. The
+transaction registers that exact canonical device as a provisional `CLAIMED`
+device in the authenticated organization and creates one QR-bound bootstrap
+session; the Access Service resource mapping is then registered before the
+response is returned. A fresh invitation for the same device reuses the
+record, while another organization, replay, expiry, or an unsupported
+lifecycle fails closed. There is no limit on how many distinct devices one
+organization may claim this way.
 
 The invitation remains public proof-of-presence data, not a credential. The
 response is `no-store`, the session token is hash-only at rest, and lifecycle
-does not become `ACTIVE` until the existing credential-bootstrap path succeeds.
-This development demo path is disabled by default and rejected in production.
+does not become `ACTIVE` until the existing credential-bootstrap path
+succeeds. This path is disabled by default and requires the signing key
+(`QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8`) to be explicitly configured
+wherever it's enabled.
 
 ## Device certificates
 

@@ -101,12 +101,9 @@ const environmentSchema = z
   })
   .superRefine((value, context) => {
     if (value.ALGAGUARD_ENABLE_QR_ONBOARDING === "1") {
-      if (value.NODE_ENV !== "development" && value.NODE_ENV !== "test")
-        context.addIssue({
-          code: "custom",
-          path: ["ALGAGUARD_ENABLE_QR_ONBOARDING"],
-          message: "QR onboarding is development-only",
-        });
+      // QR pairing is the product's real customer-facing device-onboarding
+      // flow, not a dev-only tool, so unlike the other flags below it is
+      // permitted in production -- only the signing key is required.
       if (!value.QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8)
         context.addIssue({
           code: "custom",

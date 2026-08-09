@@ -470,7 +470,7 @@ test("HTTP exchange is authenticated, authorized, no-store, and returns once", a
   assert.equal(typeof response.body.bindingGrant, "string");
 });
 
-test("QR onboarding is disabled by default and forbidden in production", () => {
+test("QR onboarding is disabled by default but permitted in production", () => {
   const previous = { ...process.env };
   try {
     process.env = {
@@ -480,12 +480,19 @@ test("QR onboarding is disabled by default and forbidden in production", () => {
       ALGAGUARD_ENABLE_QR_ONBOARDING: "1",
       QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8: privateKeyEncoded,
     };
-    assert.throws(() => loadConfig());
-    process.env.ALGAGUARD_ENABLE_QR_ONBOARDING = "0";
+    // A customer-facing production deployment must be able to enable QR
+    // pairing -- this is the real onboarding flow, not a dev-only tool.
+    const enabled = loadConfig();
+    assert.equal(enabled.ALGAGUARD_ENABLE_QR_ONBOARDING, "1");
+    assert.equal(enabled.NODE_ENV, "production");
+
     process.env.QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8 = "";
-    const config = loadConfig();
-    assert.equal(config.ALGAGUARD_ENABLE_QR_ONBOARDING, "0");
-    assert.equal(config.QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8, undefined);
+    assert.throws(() => loadConfig());
+
+    process.env.ALGAGUARD_ENABLE_QR_ONBOARDING = "0";
+    const disabled = loadConfig();
+    assert.equal(disabled.ALGAGUARD_ENABLE_QR_ONBOARDING, "0");
+    assert.equal(disabled.QR_ONBOARDING_SIGNING_PRIVATE_KEY_PKCS8, undefined);
   } finally {
     process.env = previous;
   }
