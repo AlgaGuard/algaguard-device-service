@@ -15,9 +15,7 @@ export interface DemoValues {
   temperatureC: number;
   ph: number;
   lightLux: number;
-  nitrateMgL: number;
-  phosphateMgL: number;
-  potassiumMgL: number;
+  nutrientPercent: number;
 }
 
 export interface DemoSample {
@@ -51,9 +49,10 @@ export class DemoTelemetryGenerator {
       temperatureC: rounded(24 + slow * 0.8 + slower * 0.2, 2),
       ph: rounded(7.1 + slow * 0.12, 2),
       lightLux: rounded(900 + slow * 110 + slower * 35, 0),
-      nitrateMgL: rounded(2.4 + slow * 0.35, 2),
-      phosphateMgL: rounded(0.35 + slower * 0.06, 2),
-      potassiumMgL: rounded(1.8 + slow * 0.2 + slower * 0.05, 2),
+      nutrientPercent: rounded(
+        Math.min(100, Math.max(0, 60 + slow * 12 + slower * 4)),
+        1,
+      ),
     };
     return {
       sequence: sequence.toString(),

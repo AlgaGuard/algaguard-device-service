@@ -53,7 +53,7 @@ test("deterministic generator produces identical samples for identical input", (
   );
 });
 
-test("all six presentation values remain bounded and non-negative", () => {
+test("all four presentation values remain bounded and non-negative", () => {
   const generator = new DemoTelemetryGenerator();
   for (let index = 1n; index <= 1000n; index++) {
     const sample = generator.sample(
@@ -66,9 +66,10 @@ test("all six presentation values remain bounded and non-negative", () => {
     );
     assert.ok(sample.values.ph >= 0 && sample.values.ph <= 14);
     assert.ok(sample.values.lightLux >= 0);
-    assert.ok(sample.values.nitrateMgL >= 0);
-    assert.ok(sample.values.phosphateMgL >= 0);
-    assert.ok(sample.values.potassiumMgL >= 0);
+    assert.ok(
+      sample.values.nutrientPercent >= 0 &&
+        sample.values.nutrientPercent <= 100,
+    );
   }
 });
 
