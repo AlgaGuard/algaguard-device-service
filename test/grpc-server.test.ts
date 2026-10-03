@@ -6,7 +6,7 @@ import test from "node:test";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { buildGrpcServer } from "../src/grpc-server.js";
-import type { Authenticator } from "../src/auth.js";
+import type { AccessAuthorizer, Authenticator } from "../src/auth.js";
 import type { DeviceRecord, DeviceRepository } from "../src/domain.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -15,6 +15,13 @@ const PROTO_PATH = path.resolve(here, "..", "proto", "device_service.proto");
 const authenticate: Authenticator = async (authorization) => {
   const subjectId = authorization?.replace("Bearer ", "") || "anonymous";
   return { subjectId, service: subjectId === "service" };
+};
+
+const allowAllAuthorize: AccessAuthorizer = {
+  async authorize() {
+    return true;
+  },
+  async registerDevice() {},
 };
 
 class FakeDeviceRepository implements Partial<DeviceRepository> {
@@ -43,11 +50,14 @@ function activeDevice(): DeviceRecord {
   };
 }
 
-async function startServer(devices: Map<string, DeviceRecord>) {
+async function startServer(
+  devices: Map<string, DeviceRecord>,
+  authorize: AccessAuthorizer = allowAllAuthorize,
+) {
   const repository = new FakeDeviceRepository(
     devices,
   ) as unknown as DeviceRepository;
-  const server = buildGrpcServer({ repository, authenticate });
+  const server = buildGrpcServer({ repository, authenticate, authorize });
   const port = await new Promise<number>((resolve, reject) => {
     server.bindAsync(
       "127.0.0.1:0",
@@ -206,7 +216,11 @@ test("GetContext reports a revoked device's exact DomainError code in metadata",
   }
 });
 
-test("GetDevice returns the full device record for a service caller", async () => {
+test("GetDevice returns the full device record when the caller's own device.read permission is allowed", async () => {
+  // Unlike GetContext/GetContextByDeviceId, GetDevice mirrors
+  // GET /v1/devices/:deviceUuid, which authorizes the ORIGINAL caller's
+  // own device.read permission rather than requiring a service token --
+  // a plain user token should work here as long as authorize() allows it.
   const device = activeDevice();
   const { client, stop } = await startServer(
     new Map([[device.deviceUuid, device]]),
@@ -215,7 +229,7 @@ test("GetDevice returns the full device record for a service caller", async () =
     const response = await new Promise<any>((resolve, reject) => {
       client.getDevice(
         { deviceUuid: device.deviceUuid },
-        metadataFor("service"),
+        metadataFor("owner"),
         (error: grpc.ServiceError, value: unknown) =>
           error ? reject(error) : resolve(value),
       );
@@ -223,6 +237,39 @@ test("GetDevice returns the full device record for a service caller", async () =
     assert.equal(response.deviceUuid, device.deviceUuid);
     assert.equal(response.hardwareModel, device.hardwareModel);
     assert.equal(response.lifecycle, "ACTIVE");
+  } finally {
+    await stop();
+  }
+});
+
+test("GetDevice is denied when the caller's own device.read permission is refused", async () => {
+  const device = activeDevice();
+  const denyAuthorize: AccessAuthorizer = {
+    async authorize() {
+      return false;
+    },
+    async registerDevice() {},
+  };
+  const { client, stop } = await startServer(
+    new Map([[device.deviceUuid, device]]),
+    denyAuthorize,
+  );
+  try {
+    await assert.rejects(
+      () =>
+        new Promise((resolve, reject) => {
+          client.getDevice(
+            { deviceUuid: device.deviceUuid },
+            metadataFor("owner"),
+            (error: grpc.ServiceError, response: unknown) =>
+              error ? reject(error) : resolve(response),
+          );
+        }),
+      (error: grpc.ServiceError) => {
+        assert.equal(error.code, grpc.status.PERMISSION_DENIED);
+        return true;
+      },
+    );
   } finally {
     await stop();
   }

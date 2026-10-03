@@ -3,7 +3,12 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { z } from "zod";
-import { createAuthenticator, type Authenticator } from "./auth.js";
+import {
+  createAuthenticator,
+  OidcAccessAuthorizer,
+  type AccessAuthorizer,
+  type Authenticator,
+} from "./auth.js";
 import {
   DomainError,
   resolveDeviceContext,
@@ -73,6 +78,7 @@ function grpcErrorFor(error: unknown): grpc.ServiceError {
 export interface GrpcServerDependencies {
   repository: DeviceRepository;
   authenticate?: Authenticator;
+  authorize?: AccessAuthorizer;
 }
 
 export function buildGrpcServer(dependencies: GrpcServerDependencies) {
@@ -86,6 +92,7 @@ export function buildGrpcServer(dependencies: GrpcServerDependencies) {
   });
   const proto = grpc.loadPackageDefinition(packageDefinition) as any;
   const authenticate = dependencies.authenticate ?? createAuthenticator();
+  const authorize = dependencies.authorize ?? new OidcAccessAuthorizer();
   const { repository } = dependencies;
 
   const server = new grpc.Server();
@@ -144,8 +151,31 @@ export function buildGrpcServer(dependencies: GrpcServerDependencies) {
       callback: grpc.sendUnaryData<any>,
     ) {
       try {
-        await requireServicePrincipal(authenticate, call.metadata);
+        // Unlike GetContext/GetContextByDeviceId, the HTTP route this
+        // replaces (GET /v1/devices/:deviceUuid) is not service-token-only
+        // -- it authorizes the ORIGINAL caller's own device.read
+        // permission via requireAccess(). The gRPC caller (ota-service)
+        // forwards that caller's own bearer token rather than its own
+        // service token, so this mirrors that exactly.
+        const [authorization] = call.metadata.get("authorization");
+        const actor = await authenticate(
+          typeof authorization === "string" ? authorization : undefined,
+        );
         const deviceUuid = z.string().uuid().parse(call.request.deviceUuid);
+        const [correlationId] = call.metadata.get("x-correlation-id");
+        const allowed = await authorize.authorize({
+          subjectId: actor.subjectId,
+          action: "device.read",
+          resourceType: "device",
+          resourceId: deviceUuid,
+          ...(typeof correlationId === "string" ? { correlationId } : {}),
+        });
+        if (!allowed)
+          throw new DomainError(
+            "FORBIDDEN",
+            403,
+            "Operation is not authorized",
+          );
         const device = await repository.getDevice(deviceUuid);
         if (!device)
           throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");

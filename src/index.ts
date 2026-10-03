@@ -99,10 +99,11 @@ const credentialLifecycle =
       )
     : undefined;
 const authenticate = createAuthenticator();
+const authorize = new GrpcAccessAuthorizer(config.ACCESS_SERVICE_GRPC_ADDRESS);
 const server = buildApp({
   repository,
   authenticate,
-  authorize: new GrpcAccessAuthorizer(config.ACCESS_SERVICE_GRPC_ADDRESS),
+  authorize,
   credentials: new DevelopmentCredentialProvider(),
   ...(credentialLifecycle
     ? {
@@ -138,7 +139,7 @@ const server = buildApp({
   );
 });
 
-const grpcServer = buildGrpcServer({ repository, authenticate });
+const grpcServer = buildGrpcServer({ repository, authenticate, authorize });
 grpcServer.bindAsync(
   `0.0.0.0:${config.GRPC_PORT}`,
   grpc.ServerCredentials.createInsecure(),
