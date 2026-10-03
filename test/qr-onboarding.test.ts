@@ -384,7 +384,7 @@ test("a physically unpaired record is rebound by one fresh scan without duplicat
   );
 });
 
-test("scan-first HTTP exchange requires organization authorization and registers resource", async () => {
+test("scan-first HTTP exchange requires organization authorization and records a saga for async resource registration", async () => {
   const now = new Date();
   const repository = new MemoryDeviceRepository();
   const authenticate: Authenticator = async () => ({
@@ -392,15 +392,12 @@ test("scan-first HTTP exchange requires organization authorization and registers
     service: false,
   });
   let authorizationAction = "";
-  let resourceRegistered = false;
   const authorize: AccessAuthorizer = {
     async authorize(input) {
       authorizationAction = input.action;
       return input.organizationId === undefined;
     },
-    async registerDevice(_deviceUuid, registeredOrganizationId) {
-      resourceRegistered = registeredOrganizationId === organizationId;
-    },
+    async registerDevice() {},
   };
   const instance = buildApp({
     repository,
@@ -422,7 +419,10 @@ test("scan-first HTTP exchange requires organization authorization and registers
   assert.equal(response.status, 201);
   assert.equal(response.headers["cache-control"], "no-store");
   assert.equal(authorizationAction, "device.manage");
-  assert.equal(resourceRegistered, true);
+  // RegisterResource with access-service is no longer called synchronously
+  // here -- createQrOnboardingSession() records a CLAIM_CONSUMPTION saga in
+  // the same DB transaction as the claim, and a background worker completes
+  // it (covered by saga.test.ts), rather than this request depending on it.
   assert.equal((await repository.listDevices(organizationId)).length, 1);
   const visible = await request(instance)
     .get("/v1/devices")

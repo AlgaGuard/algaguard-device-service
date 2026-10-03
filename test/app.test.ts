@@ -39,10 +39,9 @@ test("liveness, readiness, and correlation middleware are available", async () =
   assert.equal((await request(instance).get("/health/ready")).status, 200);
 });
 
-test("only a successful physical command can finalize unpair and notify the former organization", async () => {
+test("only a successful physical command can finalize unpair", async () => {
   const repository = new MemoryDeviceRepository();
   const organizationId = "10000000-0000-4000-8000-000000000001";
-  const notified: Array<{ organizationId: string; commandId: string }> = [];
   const instance = buildApp({
     repository,
     authenticate,
@@ -52,11 +51,6 @@ test("only a successful physical command can finalize unpair and notify the form
       async verify(input) {
         assert.equal(input.organizationId, organizationId);
         return { ...input, physicallyConfirmed: true };
-      },
-    },
-    physicalUnpairNotifier: {
-      async notify(input) {
-        notified.push(input);
       },
     },
   });
@@ -91,7 +85,6 @@ test("only a successful physical command can finalize unpair and notify the form
     (await repository.getDevice(device.deviceUuid))?.lifecycle,
     "UNCLAIMED",
   );
-  assert.deepEqual(notified, [{ organizationId, commandId }]);
 });
 
 test("authorized QR claim and bootstrap flow uses the versioned contracts", async () => {

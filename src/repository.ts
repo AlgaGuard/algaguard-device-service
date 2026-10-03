@@ -12,11 +12,151 @@ import {
   type DeviceRecord,
   type DeviceRepository,
 } from "./domain.js";
+import type {
+  DeviceOwnershipSagaRepository,
+  NewSaga,
+  SagaClaim,
+} from "./saga.js";
 
 function iso(value: Date | string) {
   return value instanceof Date
     ? value.toISOString()
     : new Date(value).toISOString();
+}
+
+// Inserts a device_ownership_saga row (PENDING) plus its first transition,
+// using an already-open client so it shares the caller's transaction --
+// the saga row is committed atomically with the ownership change it
+// tracks, never after it.
+async function insertOwnershipSaga(client: pg.ClientBase, input: NewSaga) {
+  const sagaId = randomUUID();
+  await client.query(
+    `INSERT INTO device_ownership_saga
+       (saga_id, device_uuid, saga_type, from_organization_id, to_organization_id, event_id)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [
+      sagaId,
+      input.deviceUuid,
+      input.sagaType,
+      input.fromOrganizationId ?? null,
+      input.toOrganizationId,
+      input.eventId ?? null,
+    ],
+  );
+  await client.query(
+    `INSERT INTO device_ownership_saga_transitions (id, saga_id, state)
+     VALUES ($1,$2,'PENDING')`,
+    [randomUUID(), sagaId],
+  );
+  return sagaId;
+}
+
+function sagaClaimFrom(row: Record<string, unknown>): SagaClaim {
+  return {
+    sagaId: String(row.saga_id),
+    deviceUuid: String(row.device_uuid),
+    sagaType: row.saga_type as SagaClaim["sagaType"],
+    toOrganizationId: String(row.to_organization_id),
+    ...(row.from_organization_id
+      ? { fromOrganizationId: String(row.from_organization_id) }
+      : {}),
+    ...(row.event_id ? { eventId: String(row.event_id) } : {}),
+    attempts: Number(row.attempts),
+  };
+}
+
+export class PostgresDeviceOwnershipSagaRepository implements DeviceOwnershipSagaRepository {
+  constructor(readonly pool: pg.Pool) {}
+
+  // All time comparisons use Postgres's own now() rather than a
+  // client-supplied timestamp -- binding the Node process's wall clock
+  // against a server-generated timestamptz column is a real bug waiting to
+  // happen the moment the app host and DB host's clocks drift even
+  // slightly, which starves claim() of rows whose next_attempt_at it should
+  // see as already-past. The `now` parameter exists only so the
+  // in-memory test double (used by the saga worker's own unit tests to
+  // simulate backoff timing) can share the same interface.
+  async claim(_now?: Date): Promise<SagaClaim | undefined> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE device_ownership_saga SET state='PENDING',locked_until=NULL
+         WHERE state='IN_FLIGHT' AND locked_until <= now()`,
+      );
+      const selected = await client.query(
+        `SELECT * FROM device_ownership_saga
+          WHERE state='PENDING' AND next_attempt_at <= now()
+          ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1`,
+      );
+      const row = selected.rows[0] as Record<string, unknown> | undefined;
+      if (!row) {
+        await client.query("COMMIT");
+        return undefined;
+      }
+      const attempts = Number(row.attempts) + 1;
+      await client.query(
+        `UPDATE device_ownership_saga
+            SET state='IN_FLIGHT',attempts=$2,locked_until=now() + interval '30 seconds',last_error=NULL
+          WHERE saga_id=$1`,
+        [row.saga_id, attempts],
+      );
+      await client.query("COMMIT");
+      return sagaClaimFrom({ ...row, attempts });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async transition(sagaId: string, state: string, details?: object) {
+    await this.pool.query(
+      `INSERT INTO device_ownership_saga_transitions (id, saga_id, state, details)
+       VALUES ($1,$2,$3,$4)`,
+      [randomUUID(), sagaId, state, JSON.stringify(details ?? {})],
+    );
+  }
+
+  async complete(sagaId: string) {
+    await this.pool.query(
+      `UPDATE device_ownership_saga
+          SET state='COMPLETED',locked_until=NULL,completed_at=now()
+        WHERE saga_id=$1`,
+      [sagaId],
+    );
+    await this.transition(sagaId, "COMPLETED");
+  }
+
+  async retry(sagaId: string, reason: string, retryAt: Date) {
+    await this.pool.query(
+      `UPDATE device_ownership_saga
+          SET state='PENDING',next_attempt_at=$2,locked_until=NULL,last_error=$3
+        WHERE saga_id=$1`,
+      [sagaId, retryAt, reason],
+    );
+    await this.transition(sagaId, "PENDING", { reason });
+  }
+
+  async startCompensating(sagaId: string) {
+    await this.pool.query(
+      `UPDATE device_ownership_saga SET state='COMPENSATING',locked_until=NULL
+        WHERE saga_id=$1`,
+      [sagaId],
+    );
+    await this.transition(sagaId, "COMPENSATING");
+  }
+
+  async markCompensated(sagaId: string) {
+    await this.pool.query(
+      `UPDATE device_ownership_saga
+          SET state='COMPENSATED',completed_at=now()
+        WHERE saga_id=$1`,
+      [sagaId],
+    );
+    await this.transition(sagaId, "COMPENSATED");
+  }
 }
 
 function device(row: Record<string, unknown>): DeviceRecord {
@@ -43,22 +183,38 @@ export class PostgresDeviceRepository implements DeviceRepository {
     tankId?: string;
     hardwareModel: string;
   }) {
-    const result = await this.pool.query(
-      `INSERT INTO devices
-         (device_uuid, device_id, organization_id, tank_id, hardware_model, firmware_version, lifecycle)
-       VALUES (
-         $4,
-         'AG-' || lpad(nextval('device_number_sequence')::text, 6, '0'),
-         $1, $2, $3, '0.0.0-development', 'UNCLAIMED'
-       ) RETURNING *`,
-      [
-        input.organizationId,
-        input.tankId ?? null,
-        input.hardwareModel,
-        randomUUID(),
-      ],
-    );
-    return device(result.rows[0] as Record<string, unknown>);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `INSERT INTO devices
+           (device_uuid, device_id, organization_id, tank_id, hardware_model, firmware_version, lifecycle)
+         VALUES (
+           $4,
+           'AG-' || lpad(nextval('device_number_sequence')::text, 6, '0'),
+           $1, $2, $3, '0.0.0-development', 'UNCLAIMED'
+         ) RETURNING *`,
+        [
+          input.organizationId,
+          input.tankId ?? null,
+          input.hardwareModel,
+          randomUUID(),
+        ],
+      );
+      const created = result.rows[0] as Record<string, unknown>;
+      await insertOwnershipSaga(client, {
+        deviceUuid: String(created.device_uuid),
+        sagaType: "DEVICE_CREATION",
+        toOrganizationId: input.organizationId,
+      });
+      await client.query("COMMIT");
+      return device(created);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async listDevices(organizationId: string) {
@@ -256,6 +412,12 @@ export class PostgresDeviceRepository implements DeviceRepository {
           actorSubjectId,
         ],
       );
+      await insertOwnershipSaga(client, {
+        deviceUuid,
+        sagaType: "OWNERSHIP_TRANSFER",
+        toOrganizationId: organizationId,
+        fromOrganizationId: previousOrganizationId,
+      });
       await client.query("COMMIT");
       return {
         device: device(updated.rows[0] as Record<string, unknown>),
@@ -267,6 +429,24 @@ export class PostgresDeviceRepository implements DeviceRepository {
     } finally {
       client.release();
     }
+  }
+
+  // Compensating action for an OWNERSHIP_TRANSFER saga whose RegisterResource
+  // call never succeeded after MAX_ATTEMPTS_BEFORE_COMPENSATION retries --
+  // reverts the local ownership change without recording a new saga (this
+  // call IS the compensation, not a fresh user-initiated transfer).
+  async revertOwnershipForCompensation(
+    deviceUuid: string,
+    toOrganizationId: string,
+  ) {
+    await this.pool.query(
+      `UPDATE devices
+          SET organization_id = $2,
+              ownership_version = ownership_version + 1,
+              updated_at = now()
+        WHERE device_uuid = $1`,
+      [deviceUuid, toOrganizationId],
+    );
   }
 
   async confirmPhysicalUnpair(input: {
@@ -323,6 +503,12 @@ export class PostgresDeviceRepository implements DeviceRepository {
           `PHYSICAL_UNPAIR:${input.commandId}`,
         ],
       );
+      await insertOwnershipSaga(client, {
+        deviceUuid: input.deviceUuid,
+        sagaType: "PHYSICAL_UNPAIR_NOTIFY",
+        toOrganizationId: input.organizationId,
+        eventId: input.commandId,
+      });
       await client.query("COMMIT");
       return {
         device: device(updated.rows[0] as Record<string, unknown>),
@@ -640,7 +826,9 @@ export class PostgresDeviceRepository implements DeviceRepository {
         [input.deviceId],
       );
       let row = found.rows[0] as Record<string, unknown> | undefined;
+      let ownershipJustEstablished = false;
       if (!row && input.registerIfMissing) {
+        ownershipJustEstablished = true;
         const inserted = await client.query(
           `INSERT INTO devices
              (device_uuid, device_id, organization_id, hardware_model,
@@ -674,6 +862,7 @@ export class PostgresDeviceRepository implements DeviceRepository {
       if (!row)
         throw new DomainError("DEVICE_NOT_FOUND", 404, "Device not found");
       if (String(row.lifecycle) === "UNCLAIMED" && input.registerIfMissing) {
+        ownershipJustEstablished = true;
         const rebound = await client.query(
           `UPDATE devices
               SET organization_id=$2,
@@ -771,6 +960,13 @@ export class PostgresDeviceRepository implements DeviceRepository {
          VALUES ($1,$2,$2,$3,'QR_ONBOARDING_SESSION_ISSUED',$4)`,
         [input.deviceId, currentLifecycle, input.actorSubjectId, now],
       );
+      if (ownershipJustEstablished) {
+        await insertOwnershipSaga(client, {
+          deviceUuid: String(row.device_uuid),
+          sagaType: "CLAIM_CONSUMPTION",
+          toOrganizationId: input.organizationId,
+        });
+      }
       await client.query("COMMIT");
       return {
         schema: "urn:algaguard:schema:onboarding:bootstrap-session:v1",

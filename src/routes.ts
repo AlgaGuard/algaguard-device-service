@@ -20,10 +20,7 @@ import {
   decodeQrOnboardingInvitation,
   QrOnboardingService,
 } from "./qr-onboarding.js";
-import type {
-  PhysicalUnpairCommandVerifier,
-  PhysicalUnpairNotifier,
-} from "./physical-unpair.js";
+import type { PhysicalUnpairCommandVerifier } from "./physical-unpair.js";
 
 export interface RouteDependencies {
   repository: DeviceRepository;
@@ -37,7 +34,6 @@ export interface RouteDependencies {
   developmentOnboardingWindowMs?: number;
   qrOnboarding?: QrOnboardingService;
   physicalUnpairVerifier?: PhysicalUnpairCommandVerifier;
-  physicalUnpairNotifier?: PhysicalUnpairNotifier;
   httpBodyLimit?: string;
 }
 
@@ -93,17 +89,15 @@ export function createRouter(dependencies: RouteDependencies) {
       "organization",
       input.organizationId,
     );
+    // createDevice() records a DEVICE_CREATION saga in the same transaction
+    // as the insert; the saga worker completes RegisterResource with
+    // access-service asynchronously (compensating by revoking the device
+    // if it never succeeds), rather than blocking this response on it.
     const created = await repository.createDevice({
       organizationId: input.organizationId,
       hardwareModel: input.hardwareModel,
       ...(input.tankId ? { tankId: input.tankId } : {}),
     });
-    const requestCorrelationId = correlationId(request);
-    await authorize.registerDevice(
-      created.deviceUuid,
-      created.organizationId,
-      requestCorrelationId,
-    );
     response.status(201).json(created);
   });
 
@@ -252,6 +246,11 @@ export function createRouter(dependencies: RouteDependencies) {
               actorId: actor.subjectId,
             });
       }
+      // confirmPhysicalUnpair() records a PHYSICAL_UNPAIR_NOTIFY saga in the
+      // same transaction as the unpair; the saga worker delivers the
+      // DeviceUnpaired notification to realtime-service asynchronously and
+      // retries until it succeeds, rather than this response depending on a
+      // single best-effort attempt.
       const result = await repository.confirmPhysicalUnpair({
         deviceUuid,
         organizationId: device.organizationId,
@@ -259,11 +258,6 @@ export function createRouter(dependencies: RouteDependencies) {
         actorSubjectId: actor.subjectId,
         commandId: input.commandId,
       });
-      if (dependencies.physicalUnpairNotifier)
-        await dependencies.physicalUnpairNotifier.notify({
-          organizationId: result.previousOrganizationId,
-          commandId: input.commandId,
-        });
       response.json({
         state: "UNPAIRED",
         lifecycle: result.device.lifecycle,
@@ -436,11 +430,10 @@ export function createRouter(dependencies: RouteDependencies) {
           500,
           "Device registration failed",
         );
-      await authorize.registerDevice(
-        registered.deviceUuid,
-        registered.organizationId,
-        correlationId(request),
-      );
+      // service.exchangeScanFirst() -> createQrOnboardingSession() recorded a
+      // CLAIM_CONSUMPTION saga in the same transaction when ownership was
+      // just established; the saga worker completes RegisterResource
+      // asynchronously.
       response.setHeader("Cache-Control", "no-store");
       response.status(201).json(result);
       return;
@@ -488,16 +481,14 @@ export function createRouter(dependencies: RouteDependencies) {
       "organization",
       input.organizationId,
     );
+    // transferOwnership() records an OWNERSHIP_TRANSFER saga in the same
+    // transaction as the ownership change; the saga worker completes
+    // RegisterResource asynchronously, compensating by reverting ownership
+    // if it never succeeds after retrying.
     const transferred = await repository.transferOwnership(
       deviceUuid,
       input.organizationId,
       actor.subjectId,
-    );
-    const requestCorrelationId = correlationId(request);
-    await authorize.registerDevice(
-      transferred.device.deviceUuid,
-      transferred.device.organizationId,
-      requestCorrelationId,
     );
     response.json(transferred);
   });

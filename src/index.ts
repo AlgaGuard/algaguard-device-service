@@ -13,7 +13,10 @@ import {
 } from "./credential-service.js";
 import { PostgresCredentialStore } from "./credential-store.js";
 import { DevelopmentCredentialProvider } from "./domain.js";
-import { PostgresDeviceRepository } from "./repository.js";
+import {
+  PostgresDeviceOwnershipSagaRepository,
+  PostgresDeviceRepository,
+} from "./repository.js";
 import {
   PhysicalSessionCipher,
   PhysicalSessionHandoffService,
@@ -29,6 +32,7 @@ import {
   GrpcPhysicalUnpairCommandVerifier,
   GrpcPhysicalUnpairNotifier,
 } from "./physical-unpair.js";
+import { DeviceOwnershipSagaWorker } from "./saga.js";
 
 const config = loadConfig();
 const onboardingWindowMs = developmentOnboardingWindowMs(
@@ -122,13 +126,6 @@ const server = buildApp({
         ),
       }
     : {}),
-  ...(config.REALTIME_SERVICE_GRPC_ADDRESS
-    ? {
-        physicalUnpairNotifier: new GrpcPhysicalUnpairNotifier(
-          config.REALTIME_SERVICE_GRPC_ADDRESS,
-        ),
-      }
-    : {}),
   ownedDeviceBootstrapReissueEnabled:
     config.ALGAGUARD_ENABLE_OWNED_DEVICE_BOOTSTRAP_REISSUE === "1",
   developmentOnboardingWindowMs: onboardingWindowMs,
@@ -151,6 +148,30 @@ grpcServer.bindAsync(
   },
 );
 
+// device-creation, claim-consumption, and ownership-transfer each record a
+// saga row in the same transaction as their ownership change (repository.ts);
+// this worker completes RegisterResource with access-service and
+// DeviceUnpaired with realtime-service asynchronously, compensating
+// (reverting ownership / revoking the device) if RegisterResource never
+// succeeds after retrying.
+const sagaRepository = new PostgresDeviceOwnershipSagaRepository(pool);
+const sagaWorker = new DeviceOwnershipSagaWorker(
+  sagaRepository,
+  authorize,
+  {
+    revertOwnership: (deviceUuid, toOrganizationId) =>
+      repository.revertOwnershipForCompensation(deviceUuid, toOrganizationId),
+    retireDevice: (deviceUuid, actorSubjectId) =>
+      repository.retireDevice(deviceUuid, actorSubjectId).then(() => {}),
+  },
+  config.REALTIME_SERVICE_GRPC_ADDRESS
+    ? new GrpcPhysicalUnpairNotifier(config.REALTIME_SERVICE_GRPC_ADDRESS)
+    : undefined,
+);
+const sagaWorkerTimer = setInterval(() => void sagaWorker.runOnce(), 250);
+sagaWorkerTimer.unref();
+void sagaWorker.runOnce();
+
 let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
@@ -160,6 +181,7 @@ async function shutdown(signal: string) {
   );
   const deadline = setTimeout(() => process.exit(1), 10_000);
   deadline.unref();
+  clearInterval(sagaWorkerTimer);
   grpcServer.tryShutdown(() => {});
   server.close(async (error) => {
     try {

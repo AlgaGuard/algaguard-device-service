@@ -195,6 +195,10 @@ export interface DeviceRepository {
     organizationId: string,
     actorSubjectId: string,
   ): Promise<OwnershipTransfer>;
+  revertOwnershipForCompensation(
+    deviceUuid: string,
+    toOrganizationId: string,
+  ): Promise<void>;
   confirmPhysicalUnpair(input: {
     deviceUuid: string;
     organizationId: string;
@@ -441,6 +445,19 @@ export class MemoryDeviceRepository implements DeviceRepository {
     device.ownershipVersion = (BigInt(device.ownershipVersion) + 1n).toString();
     device.updatedAt = new Date().toISOString();
     return { device: structuredClone(device), previousOrganizationId };
+  }
+
+  async revertOwnershipForCompensation(
+    deviceUuid: string,
+    toOrganizationId: string,
+  ) {
+    const device = [...this.devices.values()].find(
+      (candidate) => candidate.deviceUuid === deviceUuid,
+    );
+    if (!device) return;
+    device.organizationId = toOrganizationId;
+    device.ownershipVersion = (BigInt(device.ownershipVersion) + 1n).toString();
+    device.updatedAt = new Date().toISOString();
   }
 
   async confirmPhysicalUnpair(input: {
