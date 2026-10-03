@@ -11,9 +11,18 @@ import "common.proto";
 
 service DeviceLookupService {
   // Replaces GET /v1/internal/devices/:deviceUuid/context
-  // (routes.ts:659-694). Callers: telemetry-service (blocks every
-  // ingestion batch), mqtt-ingestion-service, ota-service.
+  // (routes.ts:659-675). Caller: access-service's own
+  // OidcDeviceContextResolver.resolve(), used by decide() when
+  // authorizing a device resource addressed by its UUID.
   rpc GetContext(GetContextRequest) returns (DeviceContext);
+
+  // Replaces GET /v1/internal/devices/by-device-id/:deviceId/context
+  // (routes.ts:676-693). Callers: telemetry-service (blocks every
+  // ingestion batch), mqtt-ingestion-service, ota-service, and
+  // access-service's OidcDeviceContextResolver.resolveByDeviceId() (used
+  // when a decide() request addresses a device by its AG-XXXXXX id
+  // rather than its UUID).
+  rpc GetContextByDeviceId(GetContextByDeviceIdRequest) returns (DeviceContext);
 
   // Replaces GET /v1/devices/:deviceUuid (routes.ts:136-152), used
   // internally by ota-service's rollout eligibility check.
@@ -22,6 +31,10 @@ service DeviceLookupService {
 
 message GetContextRequest {
   string device_uuid = 1;
+}
+
+message GetContextByDeviceIdRequest {
+  string device_id = 1; // AG-XXXXXX form
 }
 
 // Mirrors schemas/internal/device-context-v1.schema.json field-for-field.

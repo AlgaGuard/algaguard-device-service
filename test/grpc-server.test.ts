@@ -22,8 +22,10 @@ class FakeDeviceRepository implements Partial<DeviceRepository> {
   async getDevice(deviceUuid: string) {
     return this.devices.get(deviceUuid);
   }
-  async getDeviceById() {
-    return undefined;
+  async getDeviceById(deviceId: string) {
+    return [...this.devices.values()].find(
+      (device) => device.deviceId === deviceId,
+    );
   }
 }
 
@@ -121,6 +123,28 @@ test("GetContext resolves an active device's context", async () => {
     assert.equal(response.organizationId, device.organizationId);
     assert.equal(response.status, 5); // ACTIVE
     assert.equal(response.ownershipVersion, "1");
+  } finally {
+    await stop();
+  }
+});
+
+test("GetContextByDeviceId resolves an active device's context by its AG-XXXXXX id", async () => {
+  const device = activeDevice();
+  const { client, stop } = await startServer(
+    new Map([[device.deviceUuid, device]]),
+  );
+  try {
+    const response = await new Promise<any>((resolve, reject) => {
+      client.getContextByDeviceId(
+        { deviceId: device.deviceId },
+        metadataFor("service"),
+        (error: grpc.ServiceError, value: unknown) =>
+          error ? reject(error) : resolve(value),
+      );
+    });
+    assert.equal(response.deviceUuid, device.deviceUuid);
+    assert.equal(response.deviceId, device.deviceId);
+    assert.equal(response.status, 5); // ACTIVE
   } finally {
     await stop();
   }

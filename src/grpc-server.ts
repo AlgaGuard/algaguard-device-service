@@ -82,6 +82,19 @@ export function buildGrpcServer(dependencies: GrpcServerDependencies) {
 
   const server = new grpc.Server();
 
+  function contextMessage(context: ReturnType<typeof resolveDeviceContext>) {
+    return {
+      deviceUuid: context.deviceUuid,
+      deviceId: context.deviceId,
+      organizationId: context.organizationId,
+      status: DEVICE_STATUS_NUMBER[context.status],
+      ownershipVersion: context.ownershipVersion,
+      resolvedAt: context.resolvedAt,
+      tankId: context.tankId ?? "",
+      contextVersion: context.contextVersion,
+    };
+  }
+
   server.addService(proto.algaguard.device.v1.DeviceLookupService.service, {
     async getContext(
       call: grpc.ServerUnaryCall<any, any>,
@@ -93,16 +106,26 @@ export function buildGrpcServer(dependencies: GrpcServerDependencies) {
         const context = resolveDeviceContext(
           await repository.getDevice(deviceUuid),
         );
-        callback(null, {
-          deviceUuid: context.deviceUuid,
-          deviceId: context.deviceId,
-          organizationId: context.organizationId,
-          status: DEVICE_STATUS_NUMBER[context.status],
-          ownershipVersion: context.ownershipVersion,
-          resolvedAt: context.resolvedAt,
-          tankId: context.tankId ?? "",
-          contextVersion: context.contextVersion,
-        });
+        callback(null, contextMessage(context));
+      } catch (error) {
+        callback(grpcErrorFor(error));
+      }
+    },
+
+    async getContextByDeviceId(
+      call: grpc.ServerUnaryCall<any, any>,
+      callback: grpc.sendUnaryData<any>,
+    ) {
+      try {
+        await requireServicePrincipal(authenticate, call.metadata);
+        const deviceId = z
+          .string()
+          .regex(/^AG-[0-9]{6}$/)
+          .parse(call.request.deviceId);
+        const context = resolveDeviceContext(
+          await repository.getDeviceById(deviceId),
+        );
+        callback(null, contextMessage(context));
       } catch (error) {
         callback(grpcErrorFor(error));
       }
