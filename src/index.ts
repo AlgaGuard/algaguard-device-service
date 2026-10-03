@@ -1,7 +1,9 @@
+import * as grpc from "@grpc/grpc-js";
 import { createPostgresPool, createRedis } from "./adapters.js";
 import { buildApp } from "./app.js";
-import { createAuthenticator, OidcAccessAuthorizer } from "./auth.js";
+import { createAuthenticator, GrpcAccessAuthorizer } from "./auth.js";
 import { loadConfig } from "./config.js";
+import { buildGrpcServer } from "./grpc-server.js";
 import { OpenSslDevelopmentCaAdapter } from "./credential-ca.js";
 import {
   createStaticBrokerAuthenticator,
@@ -24,8 +26,8 @@ import {
   QrOnboardingService,
 } from "./qr-onboarding.js";
 import {
-  HttpPhysicalUnpairCommandVerifier,
-  HttpPhysicalUnpairNotifier,
+  GrpcPhysicalUnpairCommandVerifier,
+  GrpcPhysicalUnpairNotifier,
 } from "./physical-unpair.js";
 
 const config = loadConfig();
@@ -96,10 +98,11 @@ const credentialLifecycle =
         },
       )
     : undefined;
+const authenticate = createAuthenticator();
 const server = buildApp({
   repository,
-  authenticate: createAuthenticator(),
-  authorize: new OidcAccessAuthorizer(),
+  authenticate,
+  authorize: new GrpcAccessAuthorizer(config.ACCESS_SERVICE_GRPC_ADDRESS),
   credentials: new DevelopmentCredentialProvider(),
   ...(credentialLifecycle
     ? {
@@ -111,17 +114,17 @@ const server = buildApp({
     : {}),
   ...(physicalSessionHandoff ? { physicalSessionHandoff } : {}),
   ...(qrOnboarding ? { qrOnboarding } : {}),
-  ...(config.COMMAND_SERVICE_URL
+  ...(config.COMMAND_SERVICE_GRPC_ADDRESS
     ? {
-        physicalUnpairVerifier: new HttpPhysicalUnpairCommandVerifier(
-          config.COMMAND_SERVICE_URL,
+        physicalUnpairVerifier: new GrpcPhysicalUnpairCommandVerifier(
+          config.COMMAND_SERVICE_GRPC_ADDRESS,
         ),
       }
     : {}),
-  ...(config.REALTIME_SERVICE_URL
+  ...(config.REALTIME_SERVICE_GRPC_ADDRESS
     ? {
-        physicalUnpairNotifier: new HttpPhysicalUnpairNotifier(
-          config.REALTIME_SERVICE_URL,
+        physicalUnpairNotifier: new GrpcPhysicalUnpairNotifier(
+          config.REALTIME_SERVICE_GRPC_ADDRESS,
         ),
       }
     : {}),
@@ -135,6 +138,18 @@ const server = buildApp({
   );
 });
 
+const grpcServer = buildGrpcServer({ repository, authenticate });
+grpcServer.bindAsync(
+  `0.0.0.0:${config.GRPC_PORT}`,
+  grpc.ServerCredentials.createInsecure(),
+  (error, port) => {
+    if (error) throw error;
+    process.stdout.write(
+      `${JSON.stringify({ level: "info", service: "algaguard-device-service", message: "grpc listening", port })}\n`,
+    );
+  },
+);
+
 let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
@@ -144,6 +159,7 @@ async function shutdown(signal: string) {
   );
   const deadline = setTimeout(() => process.exit(1), 10_000);
   deadline.unref();
+  grpcServer.tryShutdown(() => {});
   server.close(async (error) => {
     try {
       await repository.close();

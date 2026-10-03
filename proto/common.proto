@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package algaguard.common.v1;
+
+// Shared across every internal RPC surface. Mirrors
+// schemas/common/device-identity-v1.schema.json#/$defs/status exactly --
+// keep these two definitions in sync by hand until a generator ties them
+// together.
+enum DeviceStatus {
+  DEVICE_STATUS_UNSPECIFIED = 0;
+  DEVICE_STATUS_UNCLAIMED = 1;
+  DEVICE_STATUS_CLAIMED = 2;
+  DEVICE_STATUS_PROVISIONING = 3;
+  DEVICE_STATUS_PROVISIONED = 4;
+  DEVICE_STATUS_ACTIVE = 5;
+  DEVICE_STATUS_INACTIVE = 6;
+  DEVICE_STATUS_REVOKED = 7;
+}
+
+// Mirrors the resourceType enum accepted by
+// POST /v1/internal/authorizations/decide and
+// PUT /v1/internal/resources/:resourceType/:resourceId
+// (algaguard-access-service/src/routes.ts).
+enum ResourceType {
+  RESOURCE_TYPE_UNSPECIFIED = 0;
+  RESOURCE_TYPE_ORGANIZATION = 1;
+  RESOURCE_TYPE_DEVICE = 2;
+  RESOURCE_TYPE_PROFILE = 3;
+  RESOURCE_TYPE_COMMAND = 4;
+  RESOURCE_TYPE_OTA = 5;
+  RESOURCE_TYPE_CURRENT_USER = 6;
+}

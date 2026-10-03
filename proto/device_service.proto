@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package algaguard.device.v1;
+
+import "common.proto";
+
+// Hosted by device-service. Replaces two internal-only HTTP lookups --
+// see algaguard-device-service/src/routes.ts and
+// schemas/internal/device-context-v1.schema.json (DeviceContext mirrors
+// that schema's fields exactly).
+
+service DeviceLookupService {
+  // Replaces GET /v1/internal/devices/:deviceUuid/context
+  // (routes.ts:659-694). Callers: telemetry-service (blocks every
+  // ingestion batch), mqtt-ingestion-service, ota-service.
+  rpc GetContext(GetContextRequest) returns (DeviceContext);
+
+  // Replaces GET /v1/devices/:deviceUuid (routes.ts:136-152), used
+  // internally by ota-service's rollout eligibility check.
+  rpc GetDevice(GetDeviceRequest) returns (Device);
+}
+
+message GetContextRequest {
+  string device_uuid = 1;
+}
+
+// Mirrors schemas/internal/device-context-v1.schema.json field-for-field.
+message DeviceContext {
+  string device_uuid = 1;
+  string device_id = 2;
+  string organization_id = 3;
+  algaguard.common.v1.DeviceStatus status = 4;
+  string ownership_version = 5;
+  string resolved_at = 6; // RFC3339
+  string tank_id = 7; // "" when unset
+  string context_version = 8; // "" when unset
+}
+
+message GetDeviceRequest {
+  string device_uuid = 1;
+}
+
+// Mirrors the DeviceRecord shape built by repository.ts's device() mapper.
+message Device {
+  string device_uuid = 1;
+  string device_id = 2;
+  string display_name = 3; // "" when unset
+  string organization_id = 4;
+  string tank_id = 5; // "" when unset
+  string hardware_model = 6;
+  string firmware_version = 7;
+  string lifecycle = 8; // UNCLAIMED|CLAIMED|PROVISIONING|PROVISIONED|ACTIVE|INACTIVE|REVOKED
+  string ownership_version = 9;
+  string created_at = 10; // RFC3339
+  string updated_at = 11; // RFC3339
+}

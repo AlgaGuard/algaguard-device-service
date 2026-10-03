@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package algaguard.command.v1;
+
+// Hosted by command-service. Replaces one internal-only lookup used by
+// device-service's physical-unpair confirmation flow -- see
+// algaguard-command-service/src/routes.ts:132-150.
+
+service CommandLookupService {
+  // Replaces GET /v1/commands/:id when called service-to-service
+  // (routes.ts:148-150 + the authorizedCommand() helper at 132-146).
+  // Caller: device-service, to verify a REQUEST_PHYSICAL_UNPAIR command
+  // before finalizing an unpair.
+  rpc GetCommand(GetCommandRequest) returns (Command);
+}
+
+message GetCommandRequest {
+  string command_id = 1;
+}
+
+// Mirrors the Command interface in
+// algaguard-command-service/src/domain.ts:53-65.
+message Command {
+  string command_id = 1;
+  string device_id = 2;
+  string organization_id = 3;
+  // REQUEST_STATUS|SET_INDICATOR_STATE|APPLY_PROFILE_CONFIGURATION|
+  // SYNC_TIME|REBOOT|PREPARE_OTA|REQUEST_PHYSICAL_UNPAIR
+  string command_type = 4;
+  // JSON-encoded command-type-specific parameters -- kept opaque for the
+  // same reason as AlertProfile.configuration_json.
+  string parameters_json = 5;
+  // QUEUED|RECEIVED|IN_PROGRESS|SUCCEEDED|FAILED|REJECTED|EXPIRED
+  string status = 6;
+  string created_at = 7; // RFC3339
+  string expires_at = 8; // RFC3339
+  string created_by = 9;
+  string correlation_id = 10;
+  string reported_at = 11; // "" when unset
+}

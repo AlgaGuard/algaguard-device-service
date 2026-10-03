@@ -1,4 +1,26 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import * as grpc from "@grpc/grpc-js";
+import * as protoLoader from "@grpc/proto-loader";
+import {
+  createServiceTokenProvider,
+  metadataWithServiceToken,
+} from "./grpc-client.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+function loadProto(file: string) {
+  const protoPath = path.resolve(here, "..", "proto", file);
+  const packageDefinition = protoLoader.loadSync(protoPath, {
+    keepCase: false,
+    longs: String,
+    enums: Number,
+    defaults: true,
+    oneofs: true,
+    includeDirs: [path.dirname(protoPath)],
+  });
+  return grpc.loadPackageDefinition(packageDefinition) as any;
+}
 
 export interface VerifiedPhysicalUnpair {
   commandId: string;
@@ -93,6 +115,92 @@ const command = z
     status: z.literal("SUCCEEDED"),
   })
   .passthrough();
+
+export class GrpcPhysicalUnpairNotifier implements PhysicalUnpairNotifier {
+  private readonly client: any;
+  private readonly serviceToken: () => Promise<string>;
+
+  constructor(
+    address: string,
+    environment: NodeJS.ProcessEnv = process.env,
+    serviceToken = createServiceTokenProvider(environment),
+  ) {
+    const proto = loadProto("realtime_service.proto");
+    this.serviceToken = serviceToken;
+    this.client = new proto.algaguard.realtime.v1.DeviceNotificationService(
+      address,
+      grpc.credentials.createInsecure(),
+    );
+  }
+
+  async notify(input: { organizationId: string; commandId: string }) {
+    const metadata = await metadataWithServiceToken(this.serviceToken);
+    await new Promise<void>((resolve, reject) => {
+      const deadline = new Date(Date.now() + 8_000);
+      this.client.deviceUnpaired(
+        { organizationId: input.organizationId, eventId: input.commandId },
+        metadata,
+        { deadline },
+        (error: grpc.ServiceError) =>
+          error
+            ? reject(new Error("Organization notification failed"))
+            : resolve(),
+      );
+    });
+  }
+}
+
+// Unlike the other gRPC clients in this file, GetCommand is authorized
+// against the ORIGINAL caller's own identity (matching the HTTP version this
+// replaces, which forwarded the caller's Authorization header as-is) rather
+// than this service's own service-to-service token -- command-service
+// decides access the same way its public GET /v1/commands/:id does.
+export class GrpcPhysicalUnpairCommandVerifier implements PhysicalUnpairCommandVerifier {
+  private readonly client: any;
+
+  constructor(address: string) {
+    const proto = loadProto("command_service.proto");
+    this.client = new proto.algaguard.command.v1.CommandLookupService(
+      address,
+      grpc.credentials.createInsecure(),
+    );
+  }
+
+  async verify(input: {
+    commandId: string;
+    deviceId: string;
+    organizationId: string;
+    authorization: string;
+  }) {
+    const metadata = new grpc.Metadata();
+    metadata.set("authorization", input.authorization);
+    const response = await new Promise<any>((resolve, reject) => {
+      const deadline = new Date(Date.now() + 8_000);
+      this.client.getCommand(
+        { commandId: input.commandId },
+        metadata,
+        { deadline },
+        (error: grpc.ServiceError, value: unknown) =>
+          error
+            ? reject(new Error("Physical confirmation is unavailable"))
+            : resolve(value),
+      );
+    });
+    const value = command.parse({
+      commandId: response.commandId,
+      deviceId: response.deviceId,
+      organizationId: response.organizationId,
+      commandType: response.commandType,
+      status: response.status,
+    });
+    if (
+      value.deviceId !== input.deviceId ||
+      value.organizationId !== input.organizationId
+    )
+      throw new Error("Physical confirmation binding mismatch");
+    return { ...value, physicallyConfirmed: true as const };
+  }
+}
 
 export class HttpPhysicalUnpairCommandVerifier implements PhysicalUnpairCommandVerifier {
   constructor(private readonly baseUrl: string) {}

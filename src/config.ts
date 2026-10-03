@@ -6,6 +6,13 @@ const environmentSchema = z
       .enum(["development", "test", "production"])
       .default("development"),
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    GRPC_PORT: z.coerce.number().int().min(1).max(65535).default(50051),
+    ACCESS_SERVICE_GRPC_ADDRESS: z
+      .string()
+      .min(1)
+      .default("access-service:50051"),
+    COMMAND_SERVICE_GRPC_ADDRESS: z.string().min(1).optional(),
+    REALTIME_SERVICE_GRPC_ADDRESS: z.string().min(1).optional(),
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.string().url(),
     ALGAGUARD_ENABLE_PHYSICAL_SESSION_HANDOFF: z.enum(["0", "1"]).default("0"),
@@ -29,8 +36,6 @@ const environmentSchema = z
     KEYCLOAK_TOKEN_URL: z.string().url().optional(),
     SERVICE_CLIENT_ID: z.string().min(1).optional(),
     SERVICE_CLIENT_SECRET: z.string().min(1).optional(),
-    COMMAND_SERVICE_URL: z.string().url().optional(),
-    REALTIME_SERVICE_URL: z.string().url().optional(),
     PHYSICAL_SESSION_HANDOFF_WRAPPING_KEY: z.string().min(1).optional(),
     HTTP_BODY_LIMIT: z
       .string()

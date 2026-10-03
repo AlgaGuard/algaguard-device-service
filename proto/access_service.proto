@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package algaguard.access.v1;
+
+import "common.proto";
+
+// Hosted by access-service. Replaces the two internal HTTP endpoints
+// used exclusively by other backend services (never called by the
+// mobile app, web dashboard, or firmware) -- see
+// algaguard-access-service/src/routes.ts.
+
+service AuthorizationService {
+  // Replaces POST /v1/internal/authorizations/decide (routes.ts:364-408).
+  // Callers: telemetry-service, realtime-service, device-service,
+  // ota-service, command-service.
+  rpc Decide(DecideRequest) returns (DecideResponse);
+}
+
+message DecideRequest {
+  string subject_id = 1;
+  string action = 2;
+  algaguard.common.v1.ResourceType resource_type = 3;
+  // Empty means "no specific resource" (matches the HTTP endpoint's
+  // optional resourceId).
+  string resource_id = 4;
+  // Empty means "not scoped to a known organization yet" (matches the
+  // HTTP endpoint's optional organizationId).
+  string organization_id = 5;
+}
+
+message DecideResponse {
+  bool allowed = 1;
+  // "" when allowed; a short machine code (e.g. RESOURCE_MISMATCH) when not.
+  string reason = 2;
+  string decided_at = 3; // RFC3339, matches decide()'s decidedAt field
+  int32 ttl_seconds = 4;
+  // Empty when not resolved (only set for device resources).
+  string ownership_version = 5;
+  // Only set for device resources: the resolved owning organization,
+  // which may differ from the caller-supplied organization_id.
+  string resolved_organization_id = 6;
+}
+
+service ResourceRegistryService {
+  // Replaces PUT /v1/internal/resources/:resourceType/:resourceId
+  // (routes.ts:337-360). Caller: device-service, on device creation,
+  // ownership transfer, and claim consumption.
+  rpc RegisterResource(RegisterResourceRequest) returns (RegisterResourceResponse);
+}
+
+message RegisterResourceRequest {
+  algaguard.common.v1.ResourceType resource_type = 1;
+  string resource_id = 2;
+  string organization_id = 3;
+}
+
+message RegisterResourceResponse {}

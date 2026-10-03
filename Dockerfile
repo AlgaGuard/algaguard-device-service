@@ -14,6 +14,7 @@ COPY --from=build --chown=node:node /app/package*.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/migrations ./migrations
-EXPOSE 3000
+COPY --from=build --chown=node:node /app/proto ./proto
+EXPOSE 3000 50051
 CMD ["node", "dist/src/index.js"]
 

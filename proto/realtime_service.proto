@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package algaguard.realtime.v1;
+
+// Hosted by realtime-service. Replaces the one internal-only
+// notification endpoint -- see
+// algaguard-realtime-service/src/routes.ts:70-88.
+
+service DeviceNotificationService {
+  // Replaces POST /v1/internal/notifications/device-unpaired
+  // (routes.ts:70-88). Caller: device-service, fired after a physical
+  // unpair is durably committed.
+  rpc DeviceUnpaired(DeviceUnpairedRequest) returns (DeviceUnpairedResponse);
+}
+
+message DeviceUnpairedRequest {
+  string organization_id = 1;
+  string event_id = 2;
+}
+
+message DeviceUnpairedResponse {}
