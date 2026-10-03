@@ -39,8 +39,14 @@ async function requireServicePrincipal(
     );
 }
 
+// grpc-js only serializes `code`, `details`, and `metadata` across the
+// wire -- a server-side Error's own `.name`/custom properties never reach
+// the client. Callers that branch on the exact DomainError code (e.g.
+// mqtt-ingestion-service distinguishing DEVICE_REVOKED from
+// DEVICE_UNCLAIMED for its metrics) need that code carried explicitly in
+// a metadata trailer.
 function grpcErrorFor(error: unknown): grpc.ServiceError {
-  const [code, name, message] =
+  const [code, domainCode, message] =
     error instanceof DomainError
       ? ([
           error.status === 403
@@ -54,11 +60,13 @@ function grpcErrorFor(error: unknown): grpc.ServiceError {
           error.message,
         ] as const)
       : ([grpc.status.INTERNAL, "INTERNAL", "Internal error"] as const);
+  const metadata = new grpc.Metadata();
+  metadata.set("x-domain-error-code", domainCode);
   return Object.assign(new Error(message), {
     code,
-    name,
+    name: domainCode,
     details: message,
-    metadata: new grpc.Metadata(),
+    metadata,
   });
 }
 

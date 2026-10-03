@@ -150,7 +150,7 @@ test("GetContextByDeviceId resolves an active device's context by its AG-XXXXXX 
   }
 });
 
-test("GetContext reports NOT_FOUND for an unknown device", async () => {
+test("GetContext reports NOT_FOUND for an unknown device, with the exact DomainError code carried in metadata", async () => {
   const { client, stop } = await startServer(new Map());
   try {
     await assert.rejects(
@@ -165,6 +165,39 @@ test("GetContext reports NOT_FOUND for an unknown device", async () => {
         }),
       (error: grpc.ServiceError) => {
         assert.equal(error.code, grpc.status.NOT_FOUND);
+        assert.equal(
+          error.metadata?.get("x-domain-error-code")[0],
+          "DEVICE_NOT_FOUND",
+        );
+        return true;
+      },
+    );
+  } finally {
+    await stop();
+  }
+});
+
+test("GetContext reports a revoked device's exact DomainError code in metadata", async () => {
+  const device = { ...activeDevice(), lifecycle: "REVOKED" as const };
+  const { client, stop } = await startServer(
+    new Map([[device.deviceUuid, device]]),
+  );
+  try {
+    await assert.rejects(
+      () =>
+        new Promise((resolve, reject) => {
+          client.getContext(
+            { deviceUuid: device.deviceUuid },
+            metadataFor("service"),
+            (error: grpc.ServiceError, response: unknown) =>
+              error ? reject(error) : resolve(response),
+          );
+        }),
+      (error: grpc.ServiceError) => {
+        assert.equal(
+          error.metadata?.get("x-domain-error-code")[0],
+          "DEVICE_REVOKED",
+        );
         return true;
       },
     );
