@@ -45,11 +45,15 @@ const vendoredProtos = [
   "realtime_service.proto",
   "command_service.proto",
 ];
+// Compare without line endings: a Windows checkout (core.autocrlf) gives the
+// vendored copy CRLF while the contracts copy may stay LF.
+const readNormalized = (file: string) =>
+  fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
 const protoMismatches = vendoredProtos.filter((file) => {
   const vendored = path.resolve("proto", file);
   const source = path.join(contractRoot, "proto", file);
   if (!fs.existsSync(source)) return true;
-  return fs.readFileSync(vendored, "utf8") !== fs.readFileSync(source, "utf8");
+  return readNormalized(vendored) !== readNormalized(source);
 });
 if (protoMismatches.length > 0)
   throw new Error(
