@@ -14,7 +14,9 @@ COPY --from=build --chown=node:node /app/package*.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/migrations ./migrations
-COPY --from=build --chown=node:node /app/proto ./proto
+# Compiled code runs from dist/src and loads protos from ../proto, i.e.
+# dist/proto -- not the repo-root proto/ the tests read via tsx.
+COPY --from=build --chown=node:node /app/proto ./dist/proto
 EXPOSE 3000 50051
 CMD ["node", "dist/src/index.js"]
 
